@@ -11,3 +11,10 @@ watchdog
 bertopic
 wordcloud
 matplotlib
+umap-learn>=0.5.0
+numba
+tbb>=2021.5.0
+anthropic>=0.7.0
+# Alternative threading libraries
+intel-openmp
+mkl

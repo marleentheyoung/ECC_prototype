@@ -1,5 +1,16 @@
-# interface.py - Fixed version with threading issues resolved and LLM topic naming
+# interface.py - Simplified threading for macOS compatibility
 import os
+import sys
+
+# Force single-threaded execution for macOS stability
+if sys.platform == 'darwin':  # macOS
+    os.environ['LOKY_MAX_CPU_COUNT'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['NUMBA_THREADING_LAYER'] = 'workqueue'
+    os.environ['NUMBA_NUM_THREADS'] = '1'
+
 import streamlit as st
 import json
 import pandas as pd
@@ -14,18 +25,21 @@ import matplotlib.pyplot as plt
 from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT
 from typing import List, Dict
 
-# Set environment variables BEFORE importing numba-dependent libraries
-os.environ['NUMBA_THREADING_LAYER'] = 'workqueue'
-os.environ['NUMBA_NUM_THREADS'] = '1'
+# Suppress warnings
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
-# Now import numba and set config
-from numba import config
-config.THREADING_LAYER = 'workqueue'
-
-# Import UMAP and BERTopic after setting threading configuration
-from umap import UMAP
-from bertopic import BERTopic
-from sklearn.feature_extraction.text import CountVectorizer
+# Import libraries with error handling
+try:
+    from umap import UMAP
+    from bertopic import BERTopic
+    from sklearn.feature_extraction.text import CountVectorizer
+    LIBRARIES_AVAILABLE = True
+except ImportError as e:
+    st.error(f"Missing required libraries: {e}")
+    st.info("Please install: pip install umap-learn bertopic")
+    LIBRARIES_AVAILABLE = False
 
 # Page config
 st.set_page_config(
@@ -35,17 +49,7 @@ st.set_page_config(
 )
 
 def generate_topic_names(topic_model, topic_info: pd.DataFrame, api_key: str = None) -> Dict[int, str]:
-    """
-    Generate meaningful topic names using Anthropic Claude based on top words for each topic.
-    
-    Args:
-        topic_model: BERTopic model
-        topic_info: DataFrame with topic information
-        api_key: Anthropic API key (optional, uses environment variable if not provided)
-    
-    Returns:
-        Dictionary mapping topic numbers to generated names
-    """
+    """Generate meaningful topic names using Anthropic Claude based on top words for each topic."""
     topic_names = {}
 
     # Set up Anthropic client
@@ -66,26 +70,23 @@ def generate_topic_names(topic_model, topic_info: pd.DataFrame, api_key: str = N
             words_str = ", ".join(top_words)
 
             # Create Claude prompt
-            prompt = f"""
-{HUMAN_PROMPT} Based on these keywords from a topic model analysis of green investment and climate-related earnings call transcripts, suggest a concise and descriptive topic name (2-4 words):
+            prompt = f"""Based on these keywords from a topic model analysis of green investment and climate-related earnings call transcripts, suggest a concise and descriptive topic name (2-4 words):
 
 Keywords: {words_str}
 
-Provide only the topic name, no explanation. If the words are incoherent, return only the topic number followed by 'Incoherent'.
-{AI_PROMPT}
-            """.strip()
+Provide only the topic name, no explanation. If the words are incoherent, return only the topic number followed by 'Incoherent'."""
 
             try:
                 response = client.messages.create(
-                model="claude-3-5-sonnet-20240620",  # Use the latest correct Claude 3.5 Sonnet release name
-                max_tokens=600,
-                temperature=0.2,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            
-                topic_name = response.content[0].text
+                    model="claude-3-5-sonnet-20240620",
+                    max_tokens=100,
+                    temperature=0.2,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                
+                topic_name = response.content[0].text.strip()
                 topic_names[topic_num] = topic_name
 
             except Exception as e:
@@ -97,7 +98,6 @@ Provide only the topic name, no explanation. If the words are incoherent, return
         return {topic_num: f"Topic {topic_num}" for topic_num in topic_info['Topic'].tolist() if topic_num != -1}
 
     return topic_names
-
 
 # Cached loaders for different markets
 @st.cache_resource
@@ -118,9 +118,19 @@ def load_combined_rag():
     rag.load_combined_data()
     return rag
 
+def get_selected_snippets():
+    """Get the currently selected snippets from session state."""
+    return st.session_state.get('selected_snippets', [])
+
 def main():
     st.title("🌱 Green Investment Analyzer")
     st.subheader("Extract climate investment insights from earnings calls")
+    
+    # Check if libraries are available
+    if not LIBRARIES_AVAILABLE:
+        st.error("Required libraries not available. Please install them first.")
+        st.code("pip install umap-learn bertopic")
+        return
     
     # Sidebar for market selection
     with st.sidebar:
@@ -155,10 +165,10 @@ def main():
 
         # API Key input for LLM topic naming
         st.header("🤖 LLM Settings")
-        api_key = st.text_input("OpenAI API Key (optional)", type="password", 
-                               help="Enter your OpenAI API key for automatic topic naming, or set OPENAI_API_KEY environment variable")
+        api_key = st.text_input("Anthropic API Key (optional)", type="password", 
+                               help="Enter your Anthropic API key for automatic topic naming")
         if api_key:
-            st.session_state.openai_api_key = api_key
+            st.session_state.anthropic_api_key = api_key
 
     # Initialize session state keys if not present
     if 'data_loaded' not in st.session_state:
@@ -167,8 +177,10 @@ def main():
         st.session_state.rag_system = None
     if 'current_market' not in st.session_state:
         st.session_state.current_market = None
-    if 'openai_api_key' not in st.session_state:
-        st.session_state.openai_api_key = None
+    if 'anthropic_api_key' not in st.session_state:
+        st.session_state.anthropic_api_key = None
+    if 'selected_snippets' not in st.session_state:
+        st.session_state.selected_snippets = []
 
     if not st.session_state.data_loaded:
         st.warning("Please select and load market data using the sidebar.")
@@ -178,153 +190,281 @@ def main():
     
     # Display current market info
     st.info(f"📊 Currently analyzing: {st.session_state.current_market} market with {len(rag.snippets)} snippets")
+    st.info("🔧 Threading: Single-threaded (macOS optimized)")
     
     # Main interface tabs
-    tab1, tab2, tab3 = st.tabs(["🔍 Search", "📈 Subtopic identification", "📊 Company Comparison"])
+    tab1, tab2, tab3 = st.tabs(["🔍 Snippet Selection", "📈 Topic Analysis", "📊 Evolution Analysis"])
     
     with tab1:
-        st.header("Topic Search")
+        st.header("Snippet Selection")
+        st.write("Select snippets for topic analysis - either search for specific topics or use all snippets")
         
+        # Selection mode
+        selection_mode = st.radio(
+            "Selection Mode:",
+            ["Use All Snippets", "Search Specific Topic"],
+            help="Choose whether to analyze all snippets or search for specific topics first"
+        )
+        
+        if selection_mode == "Use All Snippets":
+            st.subheader("📚 Use All Snippets")
+            
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                st.write(f"Total available snippets: **{len(rag.snippets)}**")
+                
+                # Sample size limit
+                max_snippets = st.number_input(
+                    "Maximum snippets to use", 
+                    min_value=100, 
+                    max_value=len(rag.snippets), 
+                    value=min(3000, len(rag.snippets)),  # Reduced default for better performance
+                    help="Limit for performance. Random sampling will be used if needed."
+                )
+            
+            with col2:
+                st.subheader("Optional Filters")
+                
+                # Company filter
+                all_companies = list(set([s.ticker for s in rag.snippets]))
+                selected_companies = st.multiselect("Filter by Company", all_companies)
+                
+                # Sentiment filter
+                sentiment_filter = st.selectbox("Filter by Sentiment", 
+                                              ["All", "opportunity", "neutral", "risk"])
+                
+                # Year range
+                years = [int(s.year) for s in rag.snippets if s.year and str(s.year).isdigit()]
+                if years:
+                    year_range = st.slider("Year Range", 
+                                         min_value=min(years), 
+                                         max_value=max(years),
+                                         value=(min(years), max(years)))
+                else:
+                    year_range = None
+            
+            if st.button("📋 Select All Snippets", type="primary"):
+                with st.spinner("Selecting and filtering snippets..."):
+                    # Apply filters
+                    filtered_snippets = []
+                    for snippet in rag.snippets:
+                        # Company filter
+                        if selected_companies and snippet.ticker not in selected_companies:
+                            continue
+                            
+                        # Sentiment filter
+                        if sentiment_filter != "All" and snippet.climate_sentiment != sentiment_filter:
+                            continue
+                            
+                        # Year filter
+                        if year_range and snippet.year:
+                            try:
+                                year = int(snippet.year)
+                                if not (year_range[0] <= year <= year_range[1]):
+                                    continue
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        filtered_snippets.append(snippet)
+                    
+                    # Apply sample size limit
+                    if len(filtered_snippets) > max_snippets:
+                        import random
+                        random.seed(42)  # For reproducibility
+                        filtered_snippets = random.sample(filtered_snippets, max_snippets)
+                    
+                    # Store in session state
+                    st.session_state.selected_snippets = filtered_snippets
+                    st.session_state.selection_method = "All snippets"
+                    
+                    st.success(f"✅ Selected {len(filtered_snippets)} snippets for topic analysis!")
+                    st.info("Go to the 'Topic Analysis' tab to analyze these snippets.")
+        
+        else:  # Search Specific Topic
+            st.subheader("🔍 Search Specific Topic")
+            
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                search_type = st.radio("Search Type", ["Category", "Custom Query", "Semantic Search"])
+                
+                if search_type == "Category":
+                    category = st.selectbox("Select Investment Category", 
+                                          list(rag.investment_categories.keys()))
+                elif search_type == "Semantic Search":
+                    query = st.text_input("Enter your semantic query")
+                    relevance_threshold = st.slider("Relevance Threshold", 
+                                                   min_value=0.0, max_value=1.0, 
+                                                   value=0.30, step=0.05,
+                                                   help="Higher values return more relevant but fewer results")
+                else:
+                    query = st.text_input("Enter your search query")
+            
+            with col2:
+                st.subheader("Filters")
+                
+                # Company filter
+                all_companies = list(set([s.ticker for s in rag.snippets]))
+                selected_companies = st.multiselect("Filter by Company", all_companies)
+                
+                # Sentiment filter
+                sentiment_filter = st.selectbox("Filter by Sentiment", 
+                                              ["All", "opportunity", "neutral", "risk"])
+                
+                # Year range
+                years = [int(s.year) for s in rag.snippets if s.year and str(s.year).isdigit()]
+                if years:
+                    year_range = st.slider("Year Range", 
+                                         min_value=min(years), 
+                                         max_value=max(years),
+                                         value=(min(years), max(years)))
+                else:
+                    year_range = None
+            
+            if st.button("🔍 Search & Select", type="primary"):
+                with st.spinner("Searching for relevant snippets..."):
+                    # Perform search based on type
+                    if search_type == "Category":
+                        results = rag.search_by_category(category, top_k=None,
+                                                       selected_companies=selected_companies if selected_companies else None,
+                                                       sentiment_filter=sentiment_filter,
+                                                       year_range=year_range)
+                    elif search_type == "Semantic Search" and query:
+                        results = rag.query_embedding_index(
+                            query, top_k=None, relevance_threshold=relevance_threshold,
+                            selected_companies=selected_companies if selected_companies else None,
+                            sentiment_filter=sentiment_filter, year_range=year_range)
+                    elif search_type == "Custom Query" and query:
+                        results = rag.search_by_query(query, top_k=None,
+                                                    selected_companies=selected_companies if selected_companies else None,
+                                                    sentiment_filter=sentiment_filter,
+                                                    year_range=year_range)
+                    else:
+                        results = []
+                        st.warning("Please enter a search query.")
+                    
+                    if results:
+                        # Convert results back to snippets
+                        selected_snippets = []
+                        for result in results:
+                            # Find the corresponding snippet
+                            for snippet in rag.snippets:
+                                if (snippet.text == result['text'] and 
+                                    snippet.company == result['company'] and
+                                    snippet.ticker == result['ticker']):
+                                    selected_snippets.append(snippet)
+                                    break
+                        
+                        # Store in session state
+                        st.session_state.selected_snippets = selected_snippets
+                        search_term = category if search_type == "Category" else query
+                        st.session_state.selection_method = f"Search: {search_term}"
+                        
+                        st.success(f"✅ Found and selected {len(selected_snippets)} snippets!")
+                        st.info("Go to the 'Topic Analysis' tab to analyze these snippets.")
+                        
+                        # Show preview of results
+                        display_results(results[:5])
+                        if len(results) > 5:
+                            st.info(f"Showing first 5 results. Total: {len(results)} snippets selected.")
+                    else:
+                        st.warning("No results found. Try adjusting your search terms or filters.")
+        
+        # Show current selection status
+        if st.session_state.selected_snippets:
+            st.markdown("---")
+            st.subheader("📋 Current Selection")
+            st.write(f"**Selected:** {len(st.session_state.selected_snippets)} snippets")
+            st.write(f"**Method:** {st.session_state.get('selection_method', 'Unknown')}")
+            
+            if st.button("🗑️ Clear Selection"):
+                st.session_state.selected_snippets = []
+                st.session_state.selection_method = ""
+                st.success("Selection cleared!")
+
+    with tab2:
+        st.header("Topic Analysis")
+        
+        # Check if snippets are selected
+        selected_snippets = get_selected_snippets()
+        
+        if not selected_snippets:
+            st.warning("⚠️ No snippets selected for analysis.")
+            st.info("Go to the 'Snippet Selection' tab first to select snippets.")
+            return
+        
+        st.info(f"📊 Ready to analyze {len(selected_snippets)} selected snippets")
+        st.write(f"**Selection method:** {st.session_state.get('selection_method', 'Unknown')}")
+        
+        # Topic analysis parameters
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            search_type = st.radio("Search Type", ["Category", "Custom Query", "Semantic Search"])
-            
-            if search_type == "Category":
-                category = st.selectbox("Select Investment Category", 
-                                      list(rag.investment_categories.keys()))
-            elif search_type == "Semantic Search":
-                query = st.text_input("Enter your semantic query")
-                # Add relevance threshold slider for semantic search
-                relevance_threshold = st.slider("Relevance Threshold", 
-                                               min_value=0.0, max_value=1.0, 
-                                               value=0.45, step=0.05,
-                                               help="Higher values return more relevant but fewer results")
-            else:
-                query = st.text_input("Enter your search query")
+            nr_topics = st.slider("Number of Topics to Find", 
+                                 min_value=2, 
+                                 max_value=min(15, len(selected_snippets)//20),  # More conservative
+                                 value=min(6, len(selected_snippets)//20))  # Lower default
         
         with col2:
-            st.subheader("Filters")
-            
-            # Company filter
-            all_companies = list(set([s.ticker for s in rag.snippets]))
-            selected_companies = st.multiselect("Filter by Company", all_companies)
-            
-            # Sentiment filter
-            sentiment_filter = st.selectbox("Filter by Sentiment", 
-                                          ["All", "opportunity", "neutral", "risk"])
-            
-            # Year range
-            years = [int(s.year) for s in rag.snippets if s.year and str(s.year).isdigit()]
-            if years:
-                year_range = st.slider("Year Range", 
-                                     min_value=min(years), 
-                                     max_value=max(years),
-                                     value=(min(years), max(years)))
-            else:
-                year_range = None
+            st.subheader("Analysis Info")
+            st.metric("Selected Snippets", len(selected_snippets))
+            st.metric("Max Topics", min(15, len(selected_snippets)//20))
         
-        # Search button and results
-        if search_type == "Category":
-            if st.button("Search by Category"):
-                # Use all snippets, no limit on search
-                results = rag.search_by_category(category, top_k=None)
-                filtered_results = filter_results(
-                    results, 
-                    selected_companies=selected_companies if selected_companies else None,
-                    sentiment_filter=sentiment_filter,
-                    year_range=year_range
-                )
-                # Display first 10 results but store all filtered results
-                display_results(filtered_results[:10])
-                st.session_state.filtered_results = filtered_results
-                st.info(f"Found {len(filtered_results)} total results (showing first 10)")
-
-        elif search_type == "Semantic Search":
-            if st.button("Semantic Search") and query:
-                # Use all snippets with relevance threshold
-                results = rag.query_embedding_index(
-                    query, 
-                    top_k=None,  # Get all results above threshold
-                    relevance_threshold=relevance_threshold
-                )
-                filtered_results = filter_results(
-                    results,
-                    selected_companies=selected_companies if selected_companies else None,
-                    sentiment_filter=sentiment_filter,
-                    year_range=year_range
-                )
-                # Display first 10 results but store all filtered results
-                display_results(filtered_results[:10])
-                st.session_state.filtered_results = filtered_results
-                st.info(f"Found {len(filtered_results)} total results (showing first 10)")
-
-        else:
-            if st.button("Search") and query:
-                # Use all snippets, no limit on search
-                results = rag.search_by_query(query, top_k=None)
-                filtered_results = filter_results(
-                    results, 
-                    selected_companies=selected_companies if selected_companies else None,
-                    sentiment_filter=sentiment_filter,
-                    year_range=year_range
-                )
-                # Display first 10 results but store all filtered results
-                display_results(filtered_results[:10])
-                st.session_state.filtered_results = filtered_results
-                st.info(f"Found {len(filtered_results)} total results (showing first 10)")
-
-    with tab2:
-        st.header("Subtopic Identification")
-
-        # Select the number of topics
-        nr_topics = st.slider("Number of Topics to Find", min_value=2, max_value=15, value=5)
-
-        texts = [res['text'] for res in st.session_state.get('filtered_results', [])]
-        if not texts:
-            st.warning("No filtered results found. Using the first 5000 snippets.")
-            texts = [s.text for s in rag.snippets][:5000]
-
-        st.write(f"Analyzing {len(texts)} snippets...")
-
-        # Create vectorizer with stopword removal
-        custom_stopwords = list(text.ENGLISH_STOP_WORDS.union({"million", "quarter", "company", "business", "group", "share", "billion", "sales", "revenues", "revenue"}))
-        vectorizer_model = CountVectorizer(stop_words=custom_stopwords)
-
-        # Train BERTopic with fixed threading
-        if st.button("Run Topic Analysis"):
-            with st.spinner("Running BERTopic..."):
+        if st.button("🚀 Run Topic Analysis", type="primary"):
+            with st.spinner("Running topic analysis..."):
                 try:
-                    # Force single-threaded execution for UMAP
+                    # Extract texts
+                    texts = [snippet.text for snippet in selected_snippets]
+                    
+                    if len(texts) < nr_topics * 20:  # Need at least 20 docs per topic
+                        st.warning(f"Not enough texts ({len(texts)}) for {nr_topics} topics. Try reducing the number of topics or selecting more snippets.")
+                        return
+                    
+                    # Create vectorizer with more aggressive stopword removal
+                    custom_stopwords = list(text.ENGLISH_STOP_WORDS.union({
+                        "million", "quarter", "company", "business", "group", "share", 
+                        "billion", "sales", "revenues", "revenue", "year", "time",
+                        "percent", "growth", "market", "increase", "decrease", "good", "well"
+                    }))
+                    vectorizer_model = CountVectorizer(
+                        stop_words=custom_stopwords,
+                        max_features=1000,  # Limit features for performance
+                        min_df=3,  # Word must appear in at least 3 documents
+                        max_df=0.8  # Word must appear in less than 80% of documents
+                    )
+                    
+                    # Simple UMAP configuration for stability
                     umap_model = UMAP(
-                        n_neighbors=15, 
-                        n_components=5, 
+                        n_neighbors=min(10, len(texts)//5), 
+                        n_components=3,  # Reduced dimensions
                         metric='cosine', 
-                        n_jobs=1,  # Single-threaded
-                        random_state=42  # For reproducibility
+                        n_jobs=1,  # Single-threaded for stability
+                        random_state=42,
+                        min_dist=0.1,
+                        spread=1.0
                     )
 
                     topic_model = BERTopic(
                         umap_model=umap_model,
-                        top_n_words=10,
+                        top_n_words=8,  # Fewer words for cleaner topics
                         nr_topics=nr_topics,
                         calculate_probabilities=False,
                         vectorizer_model=vectorizer_model,
-                        verbose=True
+                        verbose=False  # Reduce output
                     )
                     
                     topics, probs = topic_model.fit_transform(texts)
-
-                    # Show topics and their sizes
+                    
+                    # Generate topic names
                     topic_info = topic_model.get_topic_info()
                     
-                    # Generate LLM-based topic names
                     st.subheader("🤖 Generating Topic Names...")
                     with st.spinner("Generating meaningful topic names using LLM..."):
                         topic_names = generate_topic_names(
                             topic_model, 
                             topic_info, 
-                            st.session_state.get('openai_api_key')
+                            st.session_state.get('anthropic_api_key')
                         )
                     
                     # Display topics with LLM-generated names
@@ -343,7 +483,6 @@ def main():
 
                         words = topic_model.get_topic(topic_num)
 
-                        # Guard against empty topics
                         if not words:
                             st.warning(f"Topic {topic_num} has no words to display.")
                             continue
@@ -358,7 +497,7 @@ def main():
                         # Use LLM-generated name
                         llm_name = topic_names.get(topic_num, f"Topic {topic_num}")
                         st.markdown(f"**{llm_name}** (Topic {topic_num})")
-                        st.caption(f"Top words: {', '.join(word_list[:8])}")
+                        st.caption(f"Top words: {', '.join(word_list[:6])}")
                         
                         fig, ax = plt.subplots(figsize=(8, 4))
                         ax.imshow(wc, interpolation='bilinear')
@@ -384,18 +523,49 @@ def main():
                     st.session_state.topic_names = topic_names
                     st.session_state.topic_info = topic_info
                     
+                    # Export functionality
+                    st.markdown("#### Export Results")
+                    topic_results = []
+                    for i, snippet in enumerate(selected_snippets):
+                        topic_num = topics[i]
+                        topic_name = topic_names.get(topic_num, f"Topic {topic_num}")
+                        
+                        topic_results.append({
+                            'text': snippet.text,
+                            'company': snippet.company,
+                            'ticker': snippet.ticker,
+                            'year': snippet.year,
+                            'quarter': snippet.quarter,
+                            'date': snippet.date,
+                            'speaker': snippet.speaker,
+                            'profession': snippet.profession,
+                            'climate_sentiment': snippet.climate_sentiment,
+                            'topic_number': topic_num,
+                            'topic_name': topic_name
+                        })
+                    
+                    results_df = pd.DataFrame(topic_results)
+                    csv = results_df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Topic Analysis Results as CSV",
+                        data=csv,
+                        file_name="topic_analysis_results.csv",
+                        mime="text/csv"
+                    )
+                    
+                    st.success("✅ Topic analysis completed! Go to 'Evolution Analysis' tab to analyze trends over time.")
+                    
                 except Exception as e:
-                    st.error(f"Error running BERTopic: {str(e)}")
-                    st.info("Try installing Intel TBB with: pip install tbb")
-                    st.info("Or check your OpenAI API key if using LLM topic naming.")
-        
+                    st.error(f"Error running topic analysis: {str(e)}")
+                    st.info("Try reducing the number of topics or selecting fewer snippets.")
+
     with tab3:
-        st.header("📈 Subtopic Evolution Analysis")
+        st.header("📈 Topic Evolution Analysis")
         
         # Check if topic model exists from tab 2
         if 'topic_model' not in st.session_state or 'topic_names' not in st.session_state:
-            st.warning("⚠️ Please run Topic Analysis in the 'Subtopic identification' tab first to generate topics.")
-            st.info("Go to tab 2 and click 'Run Topic Analysis' to identify subtopics before analyzing their evolution.")
+            st.warning("⚠️ Please run Topic Analysis in Tab 2 first to generate topics.")
+            st.info("Go to the 'Topic Analysis' tab and click 'Run Topic Analysis'.")
             return
         
         # Market selection for evolution analysis
@@ -441,8 +611,9 @@ def main():
             )
         
         with col2:
-            # Get available years from all snippets
-            all_years = [int(s.year) for s in rag.snippets if s.year and str(s.year).isdigit()]
+            # Get available years from selected snippets
+            selected_snippets = get_selected_snippets()
+            all_years = [int(s.year) for s in selected_snippets if s.year and str(s.year).isdigit()]
             if all_years:
                 min_year, max_year = min(all_years), max(all_years)
                 selected_years = st.slider(
@@ -453,332 +624,38 @@ def main():
                     help="Select the time range for analysis"
                 )
             else:
-                st.error("No valid years found in the data.")
+                st.error("No valid years found in selected snippets.")
                 return
         
         # Analysis button
         if st.button("🔍 Analyze Topic Evolution", type="primary"):
-            col1, col2 = st.columns(2)
-        
-            with col1:
-                analyze_single = st.button("🔍 Analyze Single Topic Evolution", type="primary")
-            
-            with col2:
-                analyze_all = st.button("📊 Analyze All Topics Evolution", type="secondary")
-            
-            # Single topic analysis
-            if analyze_single and selected_topic_display:
-                with st.spinner("Analyzing single topic evolution over time..."):
-                    try:
-                        # Get the topic model and analyze evolution
-                        topic_model = st.session_state.topic_model
+            with st.spinner("Analyzing topic evolution over time..."):
+                try:
+                    # Get the topic model and analyze evolution
+                    topic_model = st.session_state.topic_model
+                    
+                    # Analyze evolution for the selected topic
+                    evolution_data = analyze_topic_evolution_simple(
+                        selected_snippets, topic_model, selected_topic, 
+                        selected_years, time_granularity, topic_names
+                    )
+                    
+                    if not evolution_data:
+                        st.warning("No data found for the selected topic and time period.")
+                    else:
+                        # Display evolution charts
+                        display_evolution_charts_simple(evolution_data, selected_topic_display, time_granularity)
                         
-                        # Load market-specific data if needed
-                        evolution_data = analyze_topic_evolution(
-                            rag, topic_model, selected_topic, 
-                            show_eu, show_us, selected_years, time_granularity
-                        )
+                        # Display detailed insights
+                        display_evolution_insights_simple(evolution_data, selected_topic_display, time_granularity)
                         
-                        if not evolution_data:
-                            st.warning("No data found for the selected topic and time period.")
-                        else:
-                            # Display evolution charts
-                            display_evolution_charts(evolution_data, selected_topic_display, time_granularity)
-                            
-                            # Display detailed insights
-                            display_evolution_insights(evolution_data, selected_topic_display, time_granularity)
-                            
-                    except Exception as e:
-                        st.error(f"Error analyzing topic evolution: {str(e)}")
-                        st.info("Please ensure you have run the topic analysis first and selected valid parameters.")
-            
-            # All topics analysis
-            if analyze_all:
-                with st.spinner("Analyzing all topics evolution over time..."):
-                    try:
-                        # Get the topic model and analyze all topics evolution
-                        topic_model = st.session_state.topic_model
-                        topic_names = st.session_state.topic_names
-                        
-                        # Analyze all topics evolution
-                        all_topics_data, valid_topics = analyze_all_topics_evolution(
-                            rag, topic_model, topic_names,
-                            show_eu, show_us, selected_years, time_granularity
-                        )
-                        
-                        if not all_topics_data:
-                            st.warning("No data found for the selected time period and markets.")
-                        else:
-                            # Display stacked bar chart for all topics
-                            display_all_topics_stacked_chart(
-                                all_topics_data, valid_topics, topic_names,
-                                show_eu, show_us, time_granularity
-                            )
-                            
-                    except Exception as e:
-                        st.error(f"Error analyzing all topics evolution: {str(e)}")
-                        st.info("Please ensure you have run the topic analysis first and selected valid parameters.")
-                        
-# Add these functions to your interface.py file, right after the display_results function
-# and before the if __name__ == "__main__": line
-def analyze_all_topics_evolution(rag, topic_model, topic_names, show_eu, show_us, year_range, time_granularity):
-    """Analyze how all topics evolve over time across markets."""
-    
-    # Get all valid topics (excluding outliers)
-    topic_info = topic_model.get_topic_info()
-    valid_topics = topic_info[topic_info['Topic'] != -1]['Topic'].tolist()
-    
-    if not valid_topics:
-        return []
-    
-    # Get topic words for each topic
-    topic_keywords = {}
-    for topic_num in valid_topics:
-        topic_words = topic_model.get_topic(topic_num)
-        if topic_words:
-            topic_keywords[topic_num] = [word for word, _ in topic_words[:10]]
-    
-    # Helper function to check if snippet matches any topic
-    def get_snippet_topics(snippet_text, topic_keywords):
-        """Return list of topics that match this snippet."""
-        text_lower = snippet_text.lower()
-        matching_topics = []
-        
-        for topic_num, keywords in topic_keywords.items():
-            if any(keyword.lower() in text_lower for keyword in keywords):
-                matching_topics.append(topic_num)
-        
-        return matching_topics
-    
-    # For combined data, we need to load both markets separately
-    if st.session_state.current_market == "Combined":
-        # Load EU data
-        try:
-            eu_rag = load_eu_rag()
-            eu_snippets = eu_rag.snippets
-        except:
-            eu_snippets = []
-        
-        # Load US data
-        try:
-            us_rag = load_us_rag()
-            us_snippets = us_rag.snippets
-        except:
-            us_snippets = []
-        
-        # Create market-labeled snippets
-        market_snippets = []
-        if show_eu:
-            for snippet in eu_snippets:
-                if snippet.year and str(snippet.year).isdigit():
-                    year = int(snippet.year)
-                    if year_range[0] <= year <= year_range[1]:
-                        topics = get_snippet_topics(snippet.text, topic_keywords)
-                        if topics:  # Only include if it matches at least one topic
-                            market_snippets.append((snippet, 'EU', topics))
-        
-        if show_us:
-            for snippet in us_snippets:
-                if snippet.year and str(snippet.year).isdigit():
-                    year = int(snippet.year)
-                    if year_range[0] <= year <= year_range[1]:
-                        topics = get_snippet_topics(snippet.text, topic_keywords)
-                        if topics:  # Only include if it matches at least one topic
-                            market_snippets.append((snippet, 'US', topics))
-    
-    else:
-        # Single market data
-        current_market = st.session_state.current_market
-        if (current_market == "EU" and not show_eu) or (current_market == "US" and not show_us):
-            return []
-        
-        market_snippets = []
-        for snippet in rag.snippets:
-            if snippet.year and str(snippet.year).isdigit():
-                year = int(snippet.year)
-                if year_range[0] <= year <= year_range[1]:
-                    topics = get_snippet_topics(snippet.text, topic_keywords)
-                    if topics:  # Only include if it matches at least one topic
-                        market_snippets.append((snippet, current_market, topics))
-    
-    # Group by time periods and topics
-    time_groups = {}
-    for snippet, market, topics in market_snippets:
-        if time_granularity == "Yearly":
-            period = str(snippet.year)
-        else:  # Quarterly
-            period = f"{snippet.year}-Q{snippet.quarter}"
-        
-        if period not in time_groups:
-            time_groups[period] = {}
-        
-        # Count each topic for this snippet
-        for topic_num in topics:
-            topic_key = f"{market}_{topic_num}"
-            if topic_key not in time_groups[period]:
-                time_groups[period][topic_key] = 0
-            time_groups[period][topic_key] += 1
-    
-    # Convert to list format for visualization
-    evolution_data = []
-    all_periods = sorted(time_groups.keys())
-    
-    for period in all_periods:
-        period_data = {'period': period}
-        
-        # Add counts for each topic and market combination
-        for topic_num in valid_topics:
-            topic_name = topic_names.get(topic_num, f"Topic {topic_num}")
-            
-            if show_eu:
-                eu_key = f"EU_{topic_num}"
-                period_data[f"EU_{topic_name}"] = time_groups[period].get(eu_key, 0)
-            
-            if show_us:
-                us_key = f"US_{topic_num}"
-                period_data[f"US_{topic_name}"] = time_groups[period].get(us_key, 0)
-        
-        evolution_data.append(period_data)
-    
-    return evolution_data, valid_topics
+                except Exception as e:
+                    st.error(f"Error analyzing topic evolution: {str(e)}")
+                    st.info("Please ensure you have run the topic analysis first and selected valid parameters.")
 
 
-def display_all_topics_stacked_chart(evolution_data, valid_topics, topic_names, show_eu, show_us, time_granularity):
-    """Display stacked bar chart for all topics evolution."""
-    
-    if not evolution_data:
-        st.warning("No data available for all topics visualization.")
-        return
-    
-    # Convert to DataFrame
-    df = pd.DataFrame(evolution_data)
-    
-    st.subheader("📊 All Topics Evolution - Stacked Bar Chart")
-    
-    # Create separate charts for EU and US if both are selected
-    if show_eu and show_us:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### EU Market")
-            eu_columns = [col for col in df.columns if col.startswith('EU_') and col != 'period']
-            if eu_columns:
-                # Prepare data for EU stacked bar chart
-                eu_data = df[['period'] + eu_columns].set_index('period')
-                # Remove 'EU_' prefix from column names for cleaner display
-                eu_data.columns = [col.replace('EU_', '') for col in eu_data.columns]
-                
-                # Create stacked bar chart
-                fig_eu = px.bar(
-                    eu_data.reset_index(),
-                    x='period',
-                    y=eu_data.columns.tolist(),
-                    title=f"EU Topics Evolution ({time_granularity})",
-                    labels={'value': 'Number of Mentions', 'period': 'Time Period'},
-                    color_discrete_sequence=px.colors.qualitative.Set3
-                )
-                fig_eu.update_layout(
-                    xaxis_title="Time Period",
-                    yaxis_title="Number of Mentions",
-                    legend_title="Topics",
-                    hovermode='x unified'
-                )
-                st.plotly_chart(fig_eu, use_container_width=True)
-        
-        with col2:
-            st.markdown("#### US Market")
-            us_columns = [col for col in df.columns if col.startswith('US_') and col != 'period']
-            if us_columns:
-                # Prepare data for US stacked bar chart
-                us_data = df[['period'] + us_columns].set_index('period')
-                # Remove 'US_' prefix from column names for cleaner display
-                us_data.columns = [col.replace('US_', '') for col in us_data.columns]
-                
-                # Create stacked bar chart
-                fig_us = px.bar(
-                    us_data.reset_index(),
-                    x='period',
-                    y=us_data.columns.tolist(),
-                    title=f"US Topics Evolution ({time_granularity})",
-                    labels={'value': 'Number of Mentions', 'period': 'Time Period'},
-                    color_discrete_sequence=px.colors.qualitative.Set3
-                )
-                fig_us.update_layout(
-                    xaxis_title="Time Period",
-                    yaxis_title="Number of Mentions",
-                    legend_title="Topics",
-                    hovermode='x unified'
-                )
-                st.plotly_chart(fig_us, use_container_width=True)
-    
-    else:
-        # Single market view
-        market_prefix = "EU_" if show_eu else "US_"
-        market_name = "EU" if show_eu else "US"
-        
-        market_columns = [col for col in df.columns if col.startswith(market_prefix) and col != 'period']
-        if market_columns:
-            # Prepare data for stacked bar chart
-            market_data = df[['period'] + market_columns].set_index('period')
-            # Remove market prefix from column names for cleaner display
-            market_data.columns = [col.replace(market_prefix, '') for col in market_data.columns]
-            
-            # Create stacked bar chart
-            fig = px.bar(
-                market_data.reset_index(),
-                x='period',
-                y=market_data.columns.tolist(),
-                title=f"{market_name} Topics Evolution ({time_granularity})",
-                labels={'value': 'Number of Mentions', 'period': 'Time Period'},
-                color_discrete_sequence=px.colors.qualitative.Set3
-            )
-            fig.update_layout(
-                xaxis_title="Time Period",
-                yaxis_title="Number of Mentions",
-                legend_title="Topics",
-                hovermode='x unified',
-                height=600
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    
-    # Add summary statistics
-    st.subheader("📋 Topics Summary")
-    
-    # Calculate total mentions per topic across all periods
-    topic_totals = {}
-    for topic_num in valid_topics:
-        topic_name = topic_names.get(topic_num, f"Topic {topic_num}")
-        total = 0
-        
-        if show_eu:
-            eu_col = f"EU_{topic_name}"
-            if eu_col in df.columns:
-                total += df[eu_col].sum()
-        
-        if show_us:
-            us_col = f"US_{topic_name}"
-            if us_col in df.columns:
-                total += df[us_col].sum()
-        
-        topic_totals[topic_name] = total
-    
-    # Display as a simple table
-    summary_df = pd.DataFrame(list(topic_totals.items()), columns=['Topic', 'Total Mentions'])
-    summary_df = summary_df.sort_values('Total Mentions', ascending=False)
-    st.dataframe(summary_df, use_container_width=True)
-    
-    # Download option for all topics data
-    st.markdown("#### Export All Topics Data")
-    csv = df.to_csv(index=False)
-    st.download_button(
-        label="📥 Download All Topics Evolution Data as CSV",
-        data=csv,
-        file_name=f"all_topics_evolution_{time_granularity.lower()}.csv",
-        mime="text/csv"
-    )
-
-def analyze_topic_evolution(rag, topic_model, selected_topic, show_eu, show_us, year_range, time_granularity):
-    """Analyze how a specific topic evolves over time across markets."""
+def analyze_topic_evolution_simple(selected_snippets, topic_model, selected_topic, year_range, time_granularity, topic_names):
+    """Analyze how a specific topic evolves over time for selected snippets."""
     
     # Get the topic words to identify relevant snippets
     topic_words = topic_model.get_topic(selected_topic)
@@ -788,64 +665,23 @@ def analyze_topic_evolution(rag, topic_model, selected_topic, show_eu, show_us, 
     # Extract keywords from the topic
     keywords = [word for word, _ in topic_words[:10]]  # Top 10 words
     
-    evolution_data = []
-    
     # Helper function to check if snippet matches topic
     def snippet_matches_topic(snippet_text, keywords):
         text_lower = snippet_text.lower()
         return any(keyword.lower() in text_lower for keyword in keywords)
     
-    # For combined data, we need to load both markets separately
-    if st.session_state.current_market == "Combined":
-        # Load EU data
-        try:
-            eu_rag = load_eu_rag()
-            eu_snippets = eu_rag.snippets
-        except:
-            eu_snippets = []
-        
-        # Load US data
-        try:
-            us_rag = load_us_rag()
-            us_snippets = us_rag.snippets
-        except:
-            us_snippets = []
-        
-        # Create market-labeled snippets
-        market_snippets = []
-        if show_eu:
-            for snippet in eu_snippets:
-                if snippet.year and str(snippet.year).isdigit():
-                    year = int(snippet.year)
-                    if year_range[0] <= year <= year_range[1]:
-                        if snippet_matches_topic(snippet.text, keywords):
-                            market_snippets.append((snippet, 'EU'))
-        
-        if show_us:
-            for snippet in us_snippets:
-                if snippet.year and str(snippet.year).isdigit():
-                    year = int(snippet.year)
-                    if year_range[0] <= year <= year_range[1]:
-                        if snippet_matches_topic(snippet.text, keywords):
-                            market_snippets.append((snippet, 'US'))
-    
-    else:
-        # Single market data
-        current_market = st.session_state.current_market
-        if (current_market == "EU" and not show_eu) or (current_market == "US" and not show_us):
-            return []
-        
-        market_snippets = []
-        for snippet in rag.snippets:
-            if snippet.year and str(snippet.year).isdigit():
-                year = int(snippet.year)
-                if year_range[0] <= year <= year_range[1]:
-                    if snippet_matches_topic(snippet.text, keywords):
-                        market_snippets.append((snippet, current_market))
+    # Filter snippets that match the topic and are in the year range
+    relevant_snippets = []
+    for snippet in selected_snippets:
+        if snippet.year and str(snippet.year).isdigit():
+            year = int(snippet.year)
+            if year_range[0] <= year <= year_range[1]:
+                if snippet_matches_topic(snippet.text, keywords):
+                    relevant_snippets.append(snippet)
     
     # Group by time periods
     time_groups = {}
-    for snippet, market in market_snippets:
+    for snippet in relevant_snippets:
         if time_granularity == "Yearly":
             period = str(snippet.year)
         else:  # Quarterly
@@ -853,33 +689,33 @@ def analyze_topic_evolution(rag, topic_model, selected_topic, show_eu, show_us, 
         
         if period not in time_groups:
             time_groups[period] = {
-                'EU': {'count': 0, 'companies': set(), 'sentiment': {'opportunity': 0, 'neutral': 0, 'risk': 0}},
-                'US': {'count': 0, 'companies': set(), 'sentiment': {'opportunity': 0, 'neutral': 0, 'risk': 0}}
+                'count': 0, 
+                'companies': set(), 
+                'sentiment': {'opportunity': 0, 'neutral': 0, 'risk': 0}
             }
         
-        time_groups[period][market]['count'] += 1
-        time_groups[period][market]['companies'].add(snippet.ticker)
+        time_groups[period]['count'] += 1
+        time_groups[period]['companies'].add(snippet.ticker)
         if snippet.climate_sentiment:
-            time_groups[period][market]['sentiment'][snippet.climate_sentiment] += 1
+            time_groups[period]['sentiment'][snippet.climate_sentiment] += 1
     
     # Convert to list format for visualization
+    evolution_data = []
     for period in sorted(time_groups.keys()):
-        for market in ['EU', 'US']:
-            if (market == 'EU' and show_eu) or (market == 'US' and show_us):
-                data = time_groups[period][market]
-                evolution_data.append({
-                    'period': period,
-                    'market': market,
-                    'count': data['count'],
-                    'companies': len(data['companies']),
-                    'sentiment_opportunity': data['sentiment']['opportunity'],
-                    'sentiment_neutral': data['sentiment']['neutral'],
-                    'sentiment_risk': data['sentiment']['risk']
-                })
+        data = time_groups[period]
+        evolution_data.append({
+            'period': period,
+            'count': data['count'],
+            'companies': len(data['companies']),
+            'sentiment_opportunity': data['sentiment']['opportunity'],
+            'sentiment_neutral': data['sentiment']['neutral'],
+            'sentiment_risk': data['sentiment']['risk']
+        })
     
     return evolution_data
 
-def display_evolution_charts(evolution_data, topic_name, time_granularity):
+
+def display_evolution_charts_simple(evolution_data, topic_name, time_granularity):
     """Display evolution charts for the selected topic."""
     
     if not evolution_data:
@@ -897,7 +733,6 @@ def display_evolution_charts(evolution_data, topic_name, time_granularity):
         df, 
         x='period', 
         y='count', 
-        color='market',
         title=f"Topic Mentions Over Time ({time_granularity})",
         labels={'count': 'Number of Mentions', 'period': 'Time Period'},
         markers=True
@@ -915,7 +750,6 @@ def display_evolution_charts(evolution_data, topic_name, time_granularity):
         df, 
         x='period', 
         y='companies', 
-        color='market',
         title=f"Number of Companies Discussing Topic ({time_granularity})",
         labels={'companies': 'Number of Companies', 'period': 'Time Period'},
         markers=True
@@ -929,7 +763,6 @@ def display_evolution_charts(evolution_data, topic_name, time_granularity):
     
     # 3. Sentiment evolution
     st.markdown("#### Sentiment Evolution")
-    col1, col2 = st.columns(2)
     
     # Prepare sentiment data
     sentiment_data = []
@@ -937,42 +770,25 @@ def display_evolution_charts(evolution_data, topic_name, time_granularity):
         for sentiment in ['opportunity', 'neutral', 'risk']:
             sentiment_data.append({
                 'period': row['period'],
-                'market': row['market'],
                 'sentiment': sentiment.title(),
                 'count': row[f'sentiment_{sentiment}']
             })
     
     sentiment_df = pd.DataFrame(sentiment_data)
     
-    with col1:
-        if len(df[df['market'] == 'EU']) > 0:
-            eu_sentiment = sentiment_df[sentiment_df['market'] == 'EU']
-            fig3 = px.bar(
-                eu_sentiment, 
-                x='period', 
-                y='count', 
-                color='sentiment',
-                title="EU Sentiment Evolution",
-                color_discrete_map={'Opportunity': 'green', 'Neutral': 'yellow', 'Risk': 'red'}
-            )
-            fig3.update_layout(xaxis_title="Time Period", yaxis_title="Count")
-            st.plotly_chart(fig3, use_container_width=True)
-    
-    with col2:
-        if len(df[df['market'] == 'US']) > 0:
-            us_sentiment = sentiment_df[sentiment_df['market'] == 'US']
-            fig4 = px.bar(
-                us_sentiment, 
-                x='period', 
-                y='count', 
-                color='sentiment',
-                title="US Sentiment Evolution",
-                color_discrete_map={'Opportunity': 'green', 'Neutral': 'yellow', 'Risk': 'red'}
-            )
-            fig4.update_layout(xaxis_title="Time Period", yaxis_title="Count")
-            st.plotly_chart(fig4, use_container_width=True)
+    fig3 = px.bar(
+        sentiment_df, 
+        x='period', 
+        y='count', 
+        color='sentiment',
+        title="Sentiment Evolution Over Time",
+        color_discrete_map={'Opportunity': 'green', 'Neutral': 'yellow', 'Risk': 'red'}
+    )
+    fig3.update_layout(xaxis_title="Time Period", yaxis_title="Count")
+    st.plotly_chart(fig3, use_container_width=True)
 
-def display_evolution_insights(evolution_data, topic_name, time_granularity):
+
+def display_evolution_insights_simple(evolution_data, topic_name, time_granularity):
     """Display insights and key metrics about topic evolution."""
     
     if not evolution_data:
@@ -1000,10 +816,10 @@ def display_evolution_insights(evolution_data, topic_name, time_granularity):
     with col4:
         # Calculate trend (simple linear trend)
         if len(df) > 1:
-            periods = list(range(len(df['period'].unique())))
-            mentions_by_period = df.groupby('period')['count'].sum().values
-            if len(mentions_by_period) > 1:
-                trend = np.polyfit(periods, mentions_by_period, 1)[0]
+            periods = list(range(len(df)))
+            mentions = df['count'].values
+            if len(mentions) > 1:
+                trend = np.polyfit(periods, mentions, 1)[0]
                 trend_emoji = "📈" if trend > 0 else "📉" if trend < 0 else "➡️"
                 st.metric("Trend", f"{trend_emoji} {trend:.1f}")
             else:
@@ -1011,28 +827,10 @@ def display_evolution_insights(evolution_data, topic_name, time_granularity):
         else:
             st.metric("Trend", "N/A")
     
-    # Market comparison
-    if len(df['market'].unique()) > 1:
-        st.markdown("#### Market Comparison")
-        market_summary = df.groupby('market').agg({
-            'count': ['sum', 'mean'],
-            'companies': 'sum'
-        }).round(2)
-        
-        market_summary.columns = ['Total Mentions', 'Avg Mentions/Period', 'Total Companies']
-        st.dataframe(market_summary, use_container_width=True)
-    
     # Period-wise breakdown
     st.markdown("#### Period-wise Breakdown")
-    period_summary = df.groupby('period').agg({
-        'count': 'sum',
-        'companies': 'sum',
-        'sentiment_opportunity': 'sum',
-        'sentiment_neutral': 'sum',
-        'sentiment_risk': 'sum'
-    }).round(2)
-    
-    period_summary.columns = ['Total Mentions', 'Companies', 'Opportunity', 'Neutral', 'Risk']
+    period_summary = df.copy()
+    period_summary.columns = ['Period', 'Mentions', 'Companies', 'Opportunity', 'Neutral', 'Risk']
     st.dataframe(period_summary, use_container_width=True)
     
     # Download option
@@ -1051,7 +849,7 @@ def display_results(results):
         st.warning("No results found.")
         return
     
-    st.subheader(f"Top {len(results)} results")
+    st.subheader(f"Preview of {len(results)} results")
     
     for i, result in enumerate(results):
         with st.expander(f"Result {i+1}: {result['company']} ({result['score']:.3f})"):
