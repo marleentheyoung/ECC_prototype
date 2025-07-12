@@ -14,41 +14,44 @@ model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 passages = []
 snippet_data = []
 
-for filename in os.listdir(path):
-    if filename.endswith('.json'):
-        full_path = os.path.join(path, filename)
-        # Open and load the JSON file
-        with open(full_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            
-        for transcript in data:
-            snippets = transcript.get('texts', [])
-            
-            # Extract metadata from transcript level
-            company = transcript.get('company_name', '')
-            ticker = transcript.get('ticker', '')
-            year = transcript.get('year', '')
-            quarter = transcript.get('quarter', '')
-            date = transcript.get('date', '')
-            
-            for snipp in snippets:
-                text = snipp.get('text', '')
-                if text:  # Only add non-empty texts
-                    passages.append(text)
-                    
-                    # Create complete snippet data
-                    snippet_dict = {
-                        'text': text,
-                        'company': company,
-                        'ticker': ticker,
-                        'year': year,
-                        'quarter': quarter,
-                        'date': date,
-                        'speaker': snipp.get('speaker', ''),
-                        'profession': snipp.get('profession', ''),
-                        'climate_sentiment': snipp.get('climate_sentiment', 'neutral')
-                    }
-                    snippet_data.append(snippet_dict)
+for ext in ['SP500', 'STOXX600']:
+    path = f'/Users/marleendejonge/Library/CloudStorage/OneDrive-UvA/PhD/PhD planning/Papers/PaperI/ECC transcripts/ECC_climate_risk/data/climate_segments/BERT/{ext}'
+
+    for filename in os.listdir(path):
+        if filename.endswith('.json'):
+            full_path = os.path.join(path, filename)
+            # Open and load the JSON file
+            with open(full_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            for transcript in data:
+                snippets = transcript.get('texts', [])
+                
+                # Extract metadata from transcript level
+                company = transcript.get('company_name', '')
+                ticker = transcript.get('ticker', '')
+                year = transcript.get('year', '')
+                quarter = transcript.get('quarter', '')
+                date = transcript.get('date', '')
+                
+                for snipp in snippets:
+                    text = snipp.get('text', '')
+                    if text:  # Only add non-empty texts
+                        passages.append(text)
+                        
+                        # Create complete snippet data
+                        snippet_dict = {
+                            'text': text,
+                            'company': company,
+                            'ticker': ticker,
+                            'year': year,
+                            'quarter': quarter,
+                            'date': date,
+                            'speaker': snipp.get('speaker', ''),
+                            'profession': snipp.get('profession', ''),
+                            'climate_sentiment': snipp.get('climate_sentiment', 'neutral')
+                        }
+                        snippet_data.append(snippet_dict)
 
 print(f"Collected {len(passages)} passages with metadata")
 
@@ -56,8 +59,8 @@ print(f"Collected {len(passages)} passages with metadata")
 embeddings = model.encode(passages, batch_size=64, show_progress_bar=True, normalize_embeddings=True)
 
 # Save embeddings and complete snippet data
-np.save('climate_passages_SP500.npy', embeddings)
-with open('climate_snippets_SP500.json', 'w') as f:
+np.save('climate_passages_full.npy', embeddings)
+with open('climate_snippets_full.json', 'w') as f:
     json.dump(snippet_data, f, indent=2)
 
 # Build FAISS index
@@ -66,6 +69,6 @@ index = faiss.IndexFlatIP(dimension)  # Use inner product for cosine similarity 
 index.add(embeddings)
 
 # Save the index
-faiss.write_index(index, 'climate_index_SP500.faiss')
+faiss.write_index(index, 'climate_index_full.faiss')
 
 print(f"Saved {len(snippet_data)} snippets with embeddings and FAISS index")

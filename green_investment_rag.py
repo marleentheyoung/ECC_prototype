@@ -280,6 +280,8 @@ class GreenInvestmentRAG:
             data = json.load(f)
         self.snippets = [Snippet.from_dict(d) for d in data]
 
+    # Update the green_investment_rag.py file with this new method:
+
     def load_market_data(self, market='EU'):
         """Load market-specific data and index files."""
         if market == 'EU':
@@ -288,24 +290,35 @@ class GreenInvestmentRAG:
         elif market == 'US':
             index_path = 'climate_index_SP500.faiss'
             snippets_path = 'climate_snippets_SP500.json'
+        elif market == 'FULL':  # New option for combined data
+            index_path = 'climate_index_full.faiss'
+            snippets_path = 'climate_snippets_full.json'
         else:
-            raise ValueError("Market must be 'EU' or 'US'")
+            raise ValueError("Market must be 'EU', 'US', or 'FULL'")
         
         self.load_snippets(snippets_path)
         self.load_index(index_path)
 
     def load_combined_data(self):
-        """Load both EU and US market data."""
-        # Load EU data
-        eu_rag = GreenInvestmentRAG()
-        eu_rag.load_market_data('EU')
-        
-        # Load US data
-        us_rag = GreenInvestmentRAG()
-        us_rag.load_market_data('US')
-        
-        # Combine snippets
-        self.snippets = eu_rag.snippets + us_rag.snippets
-        
-        # For combined data, we need to rebuild the index since we're combining two indices
-        self.build_embedding_index()
+        """Load combined EU and US market data from full index files."""
+        try:
+            # Try to load from full combined files first
+            self.load_market_data('FULL')
+            print(f"Loaded combined data from full index: {len(self.snippets)} snippets")
+        except FileNotFoundError:
+            print("Full index files not found, falling back to individual market loading...")
+            # Fallback to the old method of loading separately and combining
+            # Load EU data
+            eu_rag = GreenInvestmentRAG()
+            eu_rag.load_market_data('EU')
+            
+            # Load US data
+            us_rag = GreenInvestmentRAG()
+            us_rag.load_market_data('US')
+            
+            # Combine snippets
+            self.snippets = eu_rag.snippets + us_rag.snippets
+            
+            # For combined data, we need to rebuild the index since we're combining two indices
+            self.build_embedding_index()
+            print(f"Built combined index from separate markets: {len(self.snippets)} snippets")

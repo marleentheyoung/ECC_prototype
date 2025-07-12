@@ -99,7 +99,6 @@ Provide only the topic name, no explanation. If the words are incoherent, return
 
     return topic_names
 
-# Cached loaders for different markets
 @st.cache_resource
 def load_eu_rag():
     rag = GreenInvestmentRAG()
@@ -115,9 +114,20 @@ def load_us_rag():
 @st.cache_resource
 def load_combined_rag():
     rag = GreenInvestmentRAG()
-    rag.load_combined_data()
+    rag.load_combined_data()  # This will now try to load full index first
     return rag
 
+@st.cache_resource
+def load_full_rag():
+    """Load the full combined index directly (EU + US)."""
+    rag = GreenInvestmentRAG()
+    try:
+        rag.load_market_data('FULL')
+        return rag
+    except FileNotFoundError:
+        st.error("Full index files not found. Please ensure climate_index_full.faiss and climate_snippets_full.json exist.")
+        return None
+    
 def get_selected_snippets():
     """Get the currently selected snippets from session state."""
     return st.session_state.get('selected_snippets', [])
@@ -133,12 +143,13 @@ def main():
         return
     
     # Sidebar for market selection
+    # Sidebar for market selection
     with st.sidebar:
         st.header("🌍 Market Selection")
         
         market_option = st.selectbox(
             "Select Market(s)",
-            ["EU (STOXX 600)", "US (S&P 500)", "Combined (EU + US)"],
+            ["EU (STOXX 600)", "US (S&P 500)", "Combined (EU + US)", "Full Index (EU + US)"],
             index=0
         )
         
@@ -151,7 +162,13 @@ def main():
                     elif market_option == "US (S&P 500)":
                         rag = load_us_rag()
                         st.session_state.current_market = "US"
-                    else:  # Combined
+                    elif market_option == "Full Index (EU + US)":
+                        rag = load_full_rag()
+                        if rag is None:
+                            st.session_state.data_loaded = False
+                            return
+                        st.session_state.current_market = "Full"
+                    else:  # Combined (EU + US) - fallback method
                         rag = load_combined_rag()
                         st.session_state.current_market = "Combined"
                     
@@ -159,9 +176,16 @@ def main():
                     st.session_state.data_loaded = True
                     st.success(f"Loaded {len(rag.snippets)} snippets from {market_option}!")
                     
+                    # Show loading method info
+                    if market_option == "Full Index (EU + US)":
+                        st.info("✅ Using optimized full index files for better performance")
+                    elif market_option == "Combined (EU + US)":
+                        st.info("⚠️ Using fallback method - consider using 'Full Index' option if available")
+                    
                 except Exception as e:
                     st.error(f"Error loading {market_option} data: {e}")
                     st.session_state.data_loaded = False
+
 
         # API Key input for LLM topic naming
         st.header("🤖 LLM Settings")
@@ -560,12 +584,12 @@ def main():
                     st.info("Try reducing the number of topics or selecting fewer snippets.")
 
     with tab3:
-        st.header("📈 Topic Evolution Analysis")
+        st.header("📈 Subtopic Evolution Analysis")
         
         # Check if topic model exists from tab 2
         if 'topic_model' not in st.session_state or 'topic_names' not in st.session_state:
-            st.warning("⚠️ Please run Topic Analysis in Tab 2 first to generate topics.")
-            st.info("Go to the 'Topic Analysis' tab and click 'Run Topic Analysis'.")
+            st.warning("⚠️ Please run Topic Analysis in the 'Subtopic identification' tab first to generate topics.")
+            st.info("Go to tab 2 and click 'Run Topic Analysis' to identify subtopics before analyzing their evolution.")
             return
         
         # Market selection for evolution analysis
@@ -611,9 +635,8 @@ def main():
             )
         
         with col2:
-            # Get available years from selected snippets
-            selected_snippets = get_selected_snippets()
-            all_years = [int(s.year) for s in selected_snippets if s.year and str(s.year).isdigit()]
+            # Get available years from all snippets
+            all_years = [int(s.year) for s in rag.snippets if s.year and str(s.year).isdigit()]
             if all_years:
                 min_year, max_year = min(all_years), max(all_years)
                 selected_years = st.slider(
@@ -624,35 +647,388 @@ def main():
                     help="Select the time range for analysis"
                 )
             else:
-                st.error("No valid years found in selected snippets.")
+                st.error("No valid years found in the data.")
                 return
         
-        # Analysis button
-        if st.button("🔍 Analyze Topic Evolution", type="primary"):
-            with st.spinner("Analyzing topic evolution over time..."):
-                try:
-                    # Get the topic model and analyze evolution
-                    topic_model = st.session_state.topic_model
-                    
-                    # Analyze evolution for the selected topic
-                    evolution_data = analyze_topic_evolution_simple(
-                        selected_snippets, topic_model, selected_topic, 
-                        selected_years, time_granularity, topic_names
-                    )
-                    
-                    if not evolution_data:
-                        st.warning("No data found for the selected topic and time period.")
-                    else:
-                        # Display evolution charts
-                        display_evolution_charts_simple(evolution_data, selected_topic_display, time_granularity)
+        # Analysis type selection and buttons - FIXED STRUCTURE
+        st.subheader("🔬 Analysis Type")
+        analysis_type = st.radio(
+            "Choose Analysis Type:",
+            ["Single Topic Evolution", "All Topics Evolution"],
+            help="Select whether to analyze one specific topic or all topics together"
+        )
+        
+        # Single analysis button
+        if analysis_type == "Single Topic Evolution":
+            if st.button("🔍 Analyze Single Topic Evolution", type="primary"):
+                with st.spinner("Analyzing single topic evolution over time..."):
+                    try:
+                        # Get the topic model and analyze evolution
+                        topic_model = st.session_state.topic_model
                         
-                        # Display detailed insights
-                        display_evolution_insights_simple(evolution_data, selected_topic_display, time_granularity)
+                        # Load market-specific data if needed
+                        evolution_data = analyze_topic_evolution(
+                            rag, topic_model, selected_topic, 
+                            show_eu, show_us, selected_years, time_granularity
+                        )
                         
-                except Exception as e:
-                    st.error(f"Error analyzing topic evolution: {str(e)}")
-                    st.info("Please ensure you have run the topic analysis first and selected valid parameters.")
+                        if not evolution_data:
+                            st.warning("No data found for the selected topic and time period.")
+                        else:
+                            # Display evolution charts
+                            display_evolution_charts(evolution_data, selected_topic_display, time_granularity)
+                            
+                            # Display detailed insights
+                            display_evolution_insights(evolution_data, selected_topic_display, time_granularity)
+                            
+                    except Exception as e:
+                        st.error(f"Error analyzing topic evolution: {str(e)}")
+                        st.info("Please ensure you have run the topic analysis first and selected valid parameters.")
+        
+        # All topics analysis button
+        else:  # "All Topics Evolution"
+            if st.button("📊 Analyze All Topics Evolution", type="primary"):
+                with st.spinner("Analyzing all topics evolution over time..."):
+                    try:
+                        # Get the topic model and analyze all topics evolution
+                        topic_model = st.session_state.topic_model
+                        topic_names = st.session_state.topic_names
+                        
+                        # Analyze all topics evolution
+                        all_topics_data, valid_topics = analyze_all_topics_evolution(
+                            rag, topic_model, topic_names,
+                            show_eu, show_us, selected_years, time_granularity
+                        )
+                        
+                        if not all_topics_data:
+                            st.warning("No data found for the selected time period and markets.")
+                        else:
+                            # Display stacked bar chart for all topics
+                            display_all_topics_stacked_chart(
+                                all_topics_data, valid_topics, topic_names,
+                                show_eu, show_us, time_granularity
+                            )
+                            
+                    except Exception as e:
+                        st.error(f"Error analyzing all topics evolution: {str(e)}")
+                        st.info("Please ensure you have run the topic analysis first and selected valid parameters.")
 
+# Replace the existing function in interface.py with this corrected version:
+
+def display_all_topics_stacked_chart(evolution_data, valid_topics, topic_names, show_eu, show_us, time_granularity):
+    """Display stacked bar chart for all topics evolution."""
+    
+    if not evolution_data:
+        st.warning("No data available for all topics visualization.")
+        return
+    
+    # Convert to DataFrame
+    df = pd.DataFrame(evolution_data)
+    
+    st.subheader("📊 All Topics Evolution - Stacked Bar Chart")
+    
+    # Create separate charts for EU and US if both are selected
+    if show_eu and show_us:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### EU Market")
+            eu_columns = [col for col in df.columns if col.startswith('EU_') and col != 'period']
+            if eu_columns:
+                # Prepare data for EU stacked bar chart - melt for proper stacking
+                eu_data = df[['period'] + eu_columns]
+                # Remove 'EU_' prefix from column names for cleaner display
+                eu_data.columns = ['period'] + [col.replace('EU_', '') for col in eu_columns]
+                
+                # Melt the dataframe for plotly stacked bar chart
+                eu_melted = eu_data.melt(
+                    id_vars=['period'], 
+                    var_name='Topic', 
+                    value_name='Count'
+                )
+                
+                # Create stacked bar chart
+                fig_eu = px.bar(
+                    eu_melted,
+                    x='period',
+                    y='Count',
+                    color='Topic',
+                    title=f"EU Topics Evolution ({time_granularity})",
+                    labels={'Count': 'Number of Mentions', 'period': 'Time Period'},
+                    color_discrete_sequence=px.colors.qualitative.Set3
+                )
+                fig_eu.update_layout(
+                    xaxis_title="Time Period",
+                    yaxis_title="Number of Mentions",
+                    legend_title="Topics",
+                    hovermode='x unified',
+                    height=500
+                )
+                st.plotly_chart(fig_eu, use_container_width=True)
+        
+        with col2:
+            st.markdown("#### US Market")
+            us_columns = [col for col in df.columns if col.startswith('US_') and col != 'period']
+            if us_columns:
+                # Prepare data for US stacked bar chart - melt for proper stacking
+                us_data = df[['period'] + us_columns]
+                # Remove 'US_' prefix from column names for cleaner display
+                us_data.columns = ['period'] + [col.replace('US_', '') for col in us_columns]
+                
+                # Melt the dataframe for plotly stacked bar chart
+                us_melted = us_data.melt(
+                    id_vars=['period'], 
+                    var_name='Topic', 
+                    value_name='Count'
+                )
+                
+                # Create stacked bar chart
+                fig_us = px.bar(
+                    us_melted,
+                    x='period',
+                    y='Count',
+                    color='Topic',
+                    title=f"US Topics Evolution ({time_granularity})",
+                    labels={'Count': 'Number of Mentions', 'period': 'Time Period'},
+                    color_discrete_sequence=px.colors.qualitative.Set3
+                )
+                fig_us.update_layout(
+                    xaxis_title="Time Period",
+                    yaxis_title="Number of Mentions",
+                    legend_title="Topics",
+                    hovermode='x unified',
+                    height=500
+                )
+                st.plotly_chart(fig_us, use_container_width=True)
+    
+    else:
+        # Single market view
+        market_prefix = "EU_" if show_eu else "US_"
+        market_name = "EU" if show_eu else "US"
+        
+        market_columns = [col for col in df.columns if col.startswith(market_prefix) and col != 'period']
+        if market_columns:
+            # Prepare data for stacked bar chart - melt for proper stacking
+            market_data = df[['period'] + market_columns]
+            # Remove market prefix from column names for cleaner display
+            market_data.columns = ['period'] + [col.replace(market_prefix, '') for col in market_data.columns]
+            
+            # Melt the dataframe for plotly stacked bar chart
+            market_melted = market_data.melt(
+                id_vars=['period'], 
+                var_name='Topic', 
+                value_name='Count'
+            )
+            
+            # Create stacked bar chart
+            fig = px.bar(
+                market_melted,
+                x='period',
+                y='Count',
+                color='Topic',
+                title=f"{market_name} Topics Evolution ({time_granularity})",
+                labels={'Count': 'Number of Mentions', 'period': 'Time Period'},
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+            fig.update_layout(
+                xaxis_title="Time Period",
+                yaxis_title="Number of Mentions",
+                legend_title="Topics",
+                hovermode='x unified',
+                height=600
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # Add summary statistics
+    st.subheader("📋 Topics Summary")
+    
+    # Calculate total mentions per topic across all periods
+    topic_totals = {}
+    for topic_num in valid_topics:
+        topic_name = topic_names.get(topic_num, f"Topic {topic_num}")
+        total = 0
+        
+        if show_eu:
+            eu_col = f"EU_{topic_name}"
+            if eu_col in df.columns:
+                total += df[eu_col].sum()
+        
+        if show_us:
+            us_col = f"US_{topic_name}"
+            if us_col in df.columns:
+                total += df[us_col].sum()
+        
+        topic_totals[topic_name] = total
+    
+    # Display as a simple table
+    summary_df = pd.DataFrame(list(topic_totals.items()), columns=['Topic', 'Total Mentions'])
+    summary_df = summary_df.sort_values('Total Mentions', ascending=False)
+    st.dataframe(summary_df, use_container_width=True)
+    
+    # Download option for all topics data
+    st.markdown("#### Export All Topics Data")
+    csv = df.to_csv(index=False)
+    st.download_button(
+        label="📥 Download All Topics Evolution Data as CSV",
+        data=csv,
+        file_name=f"all_topics_evolution_{time_granularity.lower()}.csv",
+        mime="text/csv"
+    )
+
+# Update the analyze_all_topics_evolution function to handle the "Full" market option:
+
+def analyze_all_topics_evolution(rag, topic_model, topic_names, show_eu, show_us, year_range, time_granularity):
+    """Analyze how all topics evolve over time across markets."""
+    
+    # Get all valid topics (excluding outliers)
+    topic_info = topic_model.get_topic_info()
+    valid_topics = topic_info[topic_info['Topic'] != -1]['Topic'].tolist()
+    
+    if not valid_topics:
+        return []
+    
+    # Get topic words for each topic
+    topic_keywords = {}
+    for topic_num in valid_topics:
+        topic_words = topic_model.get_topic(topic_num)
+        if topic_words:
+            topic_keywords[topic_num] = [word for word, _ in topic_words[:10]]
+    
+    # Helper function to check if snippet matches any topic
+    def get_snippet_topics(snippet_text, topic_keywords):
+        """Return list of topics that match this snippet."""
+        text_lower = snippet_text.lower()
+        matching_topics = []
+        
+        for topic_num, keywords in topic_keywords.items():
+            if any(keyword.lower() in text_lower for keyword in keywords):
+                matching_topics.append(topic_num)
+        
+        return matching_topics
+    
+    # Helper function to determine market from ticker or company info
+    def determine_market(snippet):
+        """Determine if snippet is from EU or US market based on available info."""
+        # You might need to implement logic based on your data structure
+        # For now, we'll assume there's some way to identify the market
+        # This could be based on ticker symbols, company names, or other metadata
+        
+        # Example logic - you may need to adapt this based on your data
+        # US companies often have shorter ticker symbols
+        if hasattr(snippet, 'market'):
+            return snippet.market
+        
+        # Fallback: try to infer from ticker length or other characteristics
+        # This is a simple heuristic and may need adjustment
+        if len(snippet.ticker) <= 4 and snippet.ticker.isalpha():
+            return 'US'
+        else:
+            return 'EU'
+    
+    # Handle different market scenarios
+    current_market = st.session_state.current_market
+    
+    if current_market == "Full":
+        # Use all snippets from the full index, determine market for each
+        market_snippets = []
+        for snippet in rag.snippets:
+            if snippet.year and str(snippet.year).isdigit():
+                year = int(snippet.year)
+                if year_range[0] <= year <= year_range[1]:
+                    topics = get_snippet_topics(snippet.text, topic_keywords)
+                    if topics:  # Only include if it matches at least one topic
+                        market = determine_market(snippet)
+                        if (market == 'EU' and show_eu) or (market == 'US' and show_us):
+                            market_snippets.append((snippet, market, topics))
+    
+    elif current_market == "Combined":
+        # Load both markets separately (fallback method)
+        try:
+            eu_rag = load_eu_rag()
+            eu_snippets = eu_rag.snippets
+        except:
+            eu_snippets = []
+        
+        try:
+            us_rag = load_us_rag()
+            us_snippets = us_rag.snippets
+        except:
+            us_snippets = []
+        
+        # Create market-labeled snippets
+        market_snippets = []
+        if show_eu:
+            for snippet in eu_snippets:
+                if snippet.year and str(snippet.year).isdigit():
+                    year = int(snippet.year)
+                    if year_range[0] <= year <= year_range[1]:
+                        topics = get_snippet_topics(snippet.text, topic_keywords)
+                        if topics:  # Only include if it matches at least one topic
+                            market_snippets.append((snippet, 'EU', topics))
+        
+        if show_us:
+            for snippet in us_snippets:
+                if snippet.year and str(snippet.year).isdigit():
+                    year = int(snippet.year)
+                    if year_range[0] <= year <= year_range[1]:
+                        topics = get_snippet_topics(snippet.text, topic_keywords)
+                        if topics:  # Only include if it matches at least one topic
+                            market_snippets.append((snippet, 'US', topics))
+    
+    else:
+        # Single market data
+        if (current_market == "EU" and not show_eu) or (current_market == "US" and not show_us):
+            return []
+        
+        market_snippets = []
+        for snippet in rag.snippets:
+            if snippet.year and str(snippet.year).isdigit():
+                year = int(snippet.year)
+                if year_range[0] <= year <= year_range[1]:
+                    topics = get_snippet_topics(snippet.text, topic_keywords)
+                    if topics:  # Only include if it matches at least one topic
+                        market_snippets.append((snippet, current_market, topics))
+    
+    # Group by time periods and topics (rest of the function remains the same)
+    time_groups = {}
+    for snippet, market, topics in market_snippets:
+        if time_granularity == "Yearly":
+            period = str(snippet.year)
+        else:  # Quarterly
+            period = f"{snippet.year}-Q{snippet.quarter}"
+        
+        if period not in time_groups:
+            time_groups[period] = {}
+        
+        # Count each topic for this snippet
+        for topic_num in topics:
+            topic_key = f"{market}_{topic_num}"
+            if topic_key not in time_groups[period]:
+                time_groups[period][topic_key] = 0
+            time_groups[period][topic_key] += 1
+    
+    # Convert to list format for visualization
+    evolution_data = []
+    all_periods = sorted(time_groups.keys())
+    
+    for period in all_periods:
+        period_data = {'period': period}
+        
+        # Add counts for each topic and market combination
+        for topic_num in valid_topics:
+            topic_name = topic_names.get(topic_num, f"Topic {topic_num}")
+            
+            if show_eu:
+                eu_key = f"EU_{topic_num}"
+                period_data[f"EU_{topic_name}"] = time_groups[period].get(eu_key, 0)
+            
+            if show_us:
+                us_key = f"US_{topic_num}"
+                period_data[f"US_{topic_name}"] = time_groups[period].get(us_key, 0)
+        
+        evolution_data.append(period_data)
+    
+    return evolution_data, valid_topics
 
 def analyze_topic_evolution_simple(selected_snippets, topic_model, selected_topic, year_range, time_granularity, topic_names):
     """Analyze how a specific topic evolves over time for selected snippets."""
