@@ -217,8 +217,7 @@ def main():
     st.info("🔧 Threading: Single-threaded (macOS optimized)")
     
     # Main interface tabs
-    tab1, tab2, tab3 = st.tabs(["🔍 Snippet Selection", "📈 Topic Analysis", "📊 Evolution Analysis"])
-    
+    tab1, tab2, tab3 = st.tabs(["🔍 Snippet Selection", "📈 Topic Analysis", "📊 Evolution Analysis"])    
     with tab1:
         st.header("Snippet Selection")
         st.write("Select snippets for topic analysis - either search for specific topics or use all snippets")

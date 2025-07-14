@@ -59,8 +59,8 @@ print(f"Collected {len(passages)} passages with metadata")
 embeddings = model.encode(passages, batch_size=64, show_progress_bar=True, normalize_embeddings=True)
 
 # Save embeddings and complete snippet data
-np.save('climate_passages_full.npy', embeddings)
-with open('climate_snippets_full.json', 'w') as f:
+np.save('data/climate_passages_full.npy', embeddings)
+with open('data/climate_snippets_full.json', 'w') as f:
     json.dump(snippet_data, f, indent=2)
 
 # Build FAISS index
@@ -69,6 +69,6 @@ index = faiss.IndexFlatIP(dimension)  # Use inner product for cosine similarity 
 index.add(embeddings)
 
 # Save the index
-faiss.write_index(index, 'climate_index_full.faiss')
+faiss.write_index(index, 'data/climate_index_full.faiss')
 
 print(f"Saved {len(snippet_data)} snippets with embeddings and FAISS index")

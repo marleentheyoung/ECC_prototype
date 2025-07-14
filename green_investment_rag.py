@@ -34,7 +34,6 @@ class Snippet:
     
     @staticmethod
     def from_dict(d):
-        print(d)
         return Snippet(
             company=d.get("company"),
             ticker=d.get("ticker"),
@@ -264,18 +263,18 @@ class GreenInvestmentRAG:
         """Legacy method - now use global filtering in search methods."""
         return [r for r in results if r['ticker'] in companies]
     
-    def save_index(self, path='climate_index.faiss'):
+    def save_index(self, path='data/climate_index.faiss'):
         faiss.write_index(self.index, path)
 
     def load_index(self, path='climate_index.faiss', embedding_model_name='sentence-transformers/all-MiniLM-L6-v2'):
         self.model = SentenceTransformer(embedding_model_name)
         self.index = faiss.read_index(path)
 
-    def save_snippets(self, path='climate_snippets.json'):
+    def save_snippets(self, path='data/climate_snippets.json'):
         with open(path, 'w') as f:
             json.dump([s.to_dict() for s in self.snippets], f)
 
-    def load_snippets(self, path='climate_snippets.json'):
+    def load_snippets(self, path='data/climate_snippets.json'):
         with open(path) as f:
             data = json.load(f)
         self.snippets = [Snippet.from_dict(d) for d in data]
@@ -285,14 +284,14 @@ class GreenInvestmentRAG:
     def load_market_data(self, market='EU'):
         """Load market-specific data and index files."""
         if market == 'EU':
-            index_path = 'climate_index_STOXX600.faiss'
-            snippets_path = 'climate_snippets_STOXX600.json'
+            index_path = 'data/climate_index_STOXX600.faiss'
+            snippets_path = 'data/climate_snippets_STOXX600.json'
         elif market == 'US':
-            index_path = 'climate_index_SP500.faiss'
-            snippets_path = 'climate_snippets_SP500.json'
+            index_path = 'data/climate_index_SP500.faiss'
+            snippets_path = 'data/climate_snippets_SP500.json'
         elif market == 'FULL':  # New option for combined data
-            index_path = 'climate_index_full.faiss'
-            snippets_path = 'climate_snippets_full.json'
+            index_path = 'data/climate_index_full.faiss'
+            snippets_path = 'data/climate_snippets_full.json'
         else:
             raise ValueError("Market must be 'EU', 'US', or 'FULL'")
         
