@@ -6,6 +6,10 @@ from config import APP_CONFIG
 from utils import display_results, get_selected_snippets
 from data_loaders import load_market_data
 from topic_analysis import run_topic_analysis, display_topic_results, create_topic_results_dataframe
+from topic_search import (
+    perform_topic_search, validate_topic_relevance_with_llm, 
+    analyze_topic_distribution, visualize_topic_comparison, export_topic_results
+)
 from evolution_analysis import analyze_topic_evolution_simple, analyze_all_topics_evolution
 from visualization import (
     display_topic_distribution, display_evolution_charts_simple, 
@@ -46,7 +50,7 @@ def render_sidebar():
         # API Key input for LLM topic naming
         st.header("🤖 LLM Settings")
         api_key = st.text_input("Anthropic API Key (optional)", type="password", 
-                               help="Enter your Anthropic API key for automatic topic naming")
+                               help="Enter your Anthropic API key for automatic topic naming and validation")
         if api_key:
             st.session_state.anthropic_api_key = api_key
 
@@ -69,6 +73,243 @@ def render_snippet_selection_tab(rag):
     
     # Show current selection status
     render_selection_status()
+
+def render_topic_search_tab(rag):
+    """Render the topic search tab for predefined investment categories."""
+    st.header("🎯 Topic Search")
+    st.write("Search for specific investment topics and compare their presence in earnings calls")
+    
+    # Category selection
+    st.subheader("📋 Investment Categories")
+    available_categories = list(rag.investment_categories.keys())
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        selected_categories = st.multiselect(
+            "Select categories to search",
+            available_categories,
+            default=available_categories[:3] if len(available_categories) >= 3 else available_categories,
+            help="Choose which investment categories to analyze"
+        )
+    
+    with col2:
+        st.subheader("Search Settings")
+        relevance_threshold = st.slider(
+            "Relevance Threshold", 
+            min_value=0.1, 
+            max_value=0.8, 
+            value=0.30, 
+            step=0.05,
+            help="Higher values return more relevant but fewer results"
+        )
+        
+        use_llm_validation = st.checkbox(
+            "Use LLM Validation", 
+            value=True,
+            help="Use Claude to validate search results"
+        )
+    
+    # Display selected categories and their keywords
+    if selected_categories:
+        st.subheader("📝 Selected Categories & Keywords")
+        for category in selected_categories:
+            keywords = rag.investment_categories[category]
+            st.write(f"**{category}:** {', '.join(keywords)}")
+    
+    # Search execution
+    if st.button("🔍 Search Topics", type="primary", disabled=not selected_categories):
+        if not selected_categories:
+            st.warning("Please select at least one category to search.")
+            return
+        
+        with st.spinner("Searching for topics..."):
+            # Create search queries from categories
+            search_queries = {}
+            for category in selected_categories:
+                keywords = rag.investment_categories[category]
+                # Create a query from the keywords
+                query = " ".join(keywords)
+                search_queries[category] = query
+            
+            # Perform searches
+            topic_results = perform_topic_search(rag, search_queries, relevance_threshold)
+            
+            # LLM validation if requested
+            if use_llm_validation and st.session_state.get('anthropic_api_key'):
+                st.info("🤖 Validating results with LLM...")
+                validated_results = {}
+                for topic_name, snippets in topic_results.items():
+                    if snippets:  # Only validate if there are results
+                        query = search_queries[topic_name]
+                        validated_snippets = validate_topic_relevance_with_llm(
+                            snippets, topic_name, query, st.session_state.anthropic_api_key
+                        )
+                        validated_results[topic_name] = validated_snippets
+                    else:
+                        validated_results[topic_name] = snippets
+                
+                topic_results = validated_results
+                st.success("✅ LLM validation completed!")
+            
+            # Store results in session state
+            st.session_state.topic_search_results = topic_results
+            
+            # Display results
+            display_topic_search_results(topic_results)
+
+def render_manual_topic_id_tab(rag):
+    """Render the manual topic identification tab."""
+    st.header("📝 Manual Topic Identification")
+    st.write("Define custom topics using semantic search queries")
+    
+    # Topic management interface
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("➕ Add New Topic")
+        
+        # New topic form
+        with st.form("add_topic_form"):
+            new_topic_name = st.text_input(
+                "Topic Name", 
+                placeholder="e.g., Paris Agreement, EU ETS, Carbon Credits"
+            )
+            new_topic_query = st.text_area(
+                "Search Query", 
+                placeholder="Enter keywords and phrases to search for this topic",
+                help="Use descriptive terms that would appear in earnings calls when discussing this topic"
+            )
+            
+            relevance_threshold = st.slider(
+                "Relevance Threshold", 
+                min_value=0.1, 
+                max_value=0.8, 
+                value=0.30, 
+                step=0.05
+            )
+            
+            use_llm_validation = st.checkbox("Use LLM Validation", value=True)
+            
+            submitted = st.form_submit_button("🔍 Search & Add Topic")
+            
+            if submitted and new_topic_name and new_topic_query:
+                add_manual_topic(rag, new_topic_name, new_topic_query, relevance_threshold, use_llm_validation)
+    
+    with col2:
+        st.subheader("📋 Current Topics")
+        manual_topics = st.session_state.get('manual_topics', {})
+        
+        if manual_topics:
+            for topic_name, topic_data in manual_topics.items():
+                with st.expander(f"{topic_name} ({len(topic_data['snippets'])} snippets)"):
+                    st.write(f"**Query:** {topic_data['query']}")
+                    st.write(f"**Threshold:** {topic_data['threshold']}")
+                    st.write(f"**Validated:** {'Yes' if topic_data.get('validated', False) else 'No'}")
+                    
+                    if st.button(f"🗑️ Remove {topic_name}", key=f"remove_{topic_name}"):
+                        remove_manual_topic(topic_name)
+                        st.rerun()
+        else:
+            st.info("No custom topics defined yet.")
+    
+    # Display current manual topics results
+    if st.session_state.get('manual_topics'):
+        st.markdown("---")
+        display_manual_topics_overview()
+
+def add_manual_topic(rag, topic_name, query, threshold, use_validation):
+    """Add a new manual topic and perform search."""
+    with st.spinner(f"Searching for topic: {topic_name}..."):
+        # Perform semantic search
+        search_results = perform_topic_search(rag, {topic_name: query}, threshold)
+        snippets = search_results.get(topic_name, [])
+        
+        # LLM validation if requested
+        if use_validation and st.session_state.get('anthropic_api_key') and snippets:
+            st.info("🤖 Validating with LLM...")
+            snippets = validate_topic_relevance_with_llm(
+                snippets, topic_name, query, st.session_state.anthropic_api_key
+            )
+        
+        # Store in session state
+        if 'manual_topics' not in st.session_state:
+            st.session_state.manual_topics = {}
+        
+        st.session_state.manual_topics[topic_name] = {
+            'query': query,
+            'threshold': threshold,
+            'validated': use_validation,
+            'snippets': snippets
+        }
+        
+        st.success(f"✅ Added topic '{topic_name}' with {len(snippets)} snippets!")
+
+def remove_manual_topic(topic_name):
+    """Remove a manual topic."""
+    if 'manual_topics' in st.session_state and topic_name in st.session_state.manual_topics:
+        del st.session_state.manual_topics[topic_name]
+        st.success(f"Removed topic: {topic_name}")
+
+def display_manual_topics_overview():
+    """Display overview of all manual topics."""
+    st.subheader("📊 Manual Topics Overview")
+    
+    manual_topics = st.session_state.get('manual_topics', {})
+    if not manual_topics:
+        return
+    
+    # Create results dict for analysis
+    topic_results = {name: data['snippets'] for name, data in manual_topics.items()}
+    
+    # Display summary table
+    analysis_df = analyze_topic_distribution(topic_results)
+    st.dataframe(analysis_df, use_container_width=True)
+    
+    # Visualizations
+    visualize_topic_comparison(analysis_df)
+    
+    # Export functionality
+    st.markdown("#### Export Manual Topics")
+    if st.button("📥 Export Manual Topics Data"):
+        export_topic_results(topic_results, "manual_topics_results")
+
+def display_topic_search_results(topic_results):
+    """Display results from topic search."""
+    st.subheader("🔍 Topic Search Results")
+    
+    if not topic_results:
+        st.warning("No search results to display.")
+        return
+    
+    # Summary metrics
+    col1, col2, col3 = st.columns(3)
+    
+    total_snippets = sum(len(snippets) for snippets in topic_results.values())
+    total_topics = len([t for t, s in topic_results.items() if s])  # Topics with results
+    
+    with col1:
+        st.metric("Total Topics Searched", len(topic_results))
+    with col2:
+        st.metric("Topics with Results", total_topics)
+    with col3:
+        st.metric("Total Snippets Found", total_snippets)
+    
+    # Results table
+    analysis_df = analyze_topic_distribution(topic_results)
+    st.dataframe(analysis_df, use_container_width=True)
+    
+    # Visualizations
+    visualize_topic_comparison(analysis_df)
+    
+    # Store for evolution analysis
+    st.session_state.current_topic_results = topic_results
+    
+    # Export functionality
+    st.markdown("#### Export Results")
+    export_topic_results(topic_results, "investment_categories_search")
+    
+    st.success("✅ Topic search completed! You can now use these topics in Evolution Analysis.")
 
 def render_all_snippets_selection(rag):
     """Render the 'Use All Snippets' section."""
@@ -271,142 +512,55 @@ def render_selection_status():
             st.session_state.selection_method = ""
             st.success("Selection cleared!")
 
-def render_topic_analysis_tab():
-    """Render the topic analysis tab."""
-    st.header("Topic Analysis")
-    
-    # Check if snippets are selected
-    selected_snippets = get_selected_snippets()
-    
-    if not selected_snippets:
-        st.warning("⚠️ No snippets selected for analysis.")
-        st.info("Go to the 'Snippet Selection' tab first to select snippets.")
-        return
-    
-    st.info(f"📊 Ready to analyze {len(selected_snippets)} selected snippets")
-    st.write(f"**Selection method:** {st.session_state.get('selection_method', 'Unknown')}")
-    
-    # Topic analysis parameters
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        max_possible_topics = min(APP_CONFIG['max_topics'], len(selected_snippets)//20)
-        nr_topics = st.slider("Number of Topics to Find", 
-                             min_value=2, 
-                             max_value=max_possible_topics,
-                             value=min(APP_CONFIG['default_topics'], max_possible_topics))
-    
-    with col2:
-        st.subheader("Analysis Info")
-        st.metric("Selected Snippets", len(selected_snippets))
-        st.metric("Max Topics", max_possible_topics)
-    
-    if st.button("🚀 Run Topic Analysis", type="primary"):
-        run_topic_analysis_workflow(selected_snippets, nr_topics)
-
-def run_topic_analysis_workflow(selected_snippets, nr_topics):
-    """Run the complete topic analysis workflow."""
-    with st.spinner("Running topic analysis..."):
-        try:
-            # Run topic analysis
-            topic_model, topics, topic_info = run_topic_analysis(selected_snippets, nr_topics)
-            
-            if topic_model is None:
-                return
-            
-            # Generate topic names
-            st.subheader("🤖 Generating Topic Names...")
-            with st.spinner("Generating meaningful topic names using LLM..."):
-                topic_names = generate_topic_names(
-                    topic_model, 
-                    topic_info, 
-                    st.session_state.get('anthropic_api_key')
-                )
-            
-            # Display results
-            display_topic_results(topic_model, topic_info, topic_names)
-            display_topic_distribution(topic_info, topic_names)
-            
-            # Store results in session state
-            st.session_state.topic_model = topic_model
-            st.session_state.topic_names = topic_names
-            st.session_state.topic_info = topic_info
-            
-            # Export functionality
-            st.markdown("#### Export Results")
-            results_df = create_topic_results_dataframe(selected_snippets, topics, topic_names)
-            csv = results_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Topic Analysis Results as CSV",
-                data=csv,
-                file_name="topic_analysis_results.csv",
-                mime="text/csv"
-            )
-            
-            st.success("✅ Topic analysis completed! Go to 'Evolution Analysis' tab to analyze trends over time.")
-            
-        except Exception as e:
-            st.error(f"Error running topic analysis: {str(e)}")
-            st.info("Try reducing the number of topics or selecting fewer snippets.")
-
 def render_evolution_analysis_tab(rag):
-    """Render the evolution analysis tab."""
-    st.header("📈 Subtopic Evolution Analysis")
+    """Render the evolution analysis tab with support for multiple topic sources."""
+    st.header("📈 Evolution Analysis")
+    st.write("Analyze how topics evolve over time across markets")
     
-    # Check if topic model exists from tab 2
-    if 'topic_model' not in st.session_state or 'topic_names' not in st.session_state:
-        st.warning("⚠️ Please run Topic Analysis in the 'Subtopic identification' tab first to generate topics.")
-        st.info("Go to tab 2 and click 'Run Topic Analysis' to identify subtopics before analyzing their evolution.")
+    # Check available topic sources
+    topic_sources = []
+    
+    # Check for BERTopic model from topic analysis
+    if 'topic_model' in st.session_state and 'topic_names' in st.session_state:
+        topic_sources.append("BERTopic Analysis")
+    
+    # Check for topic search results
+    if 'topic_search_results' in st.session_state and st.session_state.topic_search_results:
+        topic_sources.append("Investment Categories Search")
+    
+    # Check for manual topics
+    if 'manual_topics' in st.session_state and st.session_state.manual_topics:
+        topic_sources.append("Manual Topics")
+    
+    if not topic_sources:
+        st.warning("⚠️ No topics available for analysis.")
+        st.info("Please run one of the following first:")
+        st.write("- Topic Search (Investment Categories)")
+        st.write("- Manual Topic Identification")
+        st.write("- Traditional Topic Analysis (BERTopic)")
         return
     
-    # Market and topic selection
-    show_eu, show_us, selected_topic_display, selected_topic = render_evolution_controls()
-    
-    if not show_eu and not show_us:
-        st.warning("Please select at least one market to display.")
-        return
-    
-    # Time period selection
-    time_granularity, selected_years = render_time_controls(rag)
-    
-    if selected_years is None:
-        return
-    
-    # Analysis type selection and execution
-    render_analysis_controls(rag, selected_topic, selected_topic_display, 
-                           show_eu, show_us, selected_years, time_granularity)
-
-def render_evolution_controls():
-    """Render market and topic selection controls."""
+    # Topic source selection
     col1, col2 = st.columns([1, 1])
     
     with col1:
+        st.subheader("📊 Topic Source")
+        selected_source = st.selectbox(
+            "Select topic source for analysis",
+            topic_sources,
+            help="Choose which set of topics to analyze"
+        )
+    
+    with col2:
         st.subheader("🌍 Market Selection")
         show_eu = st.checkbox("Show EU (STOXX 600)", value=True)
         show_us = st.checkbox("Show US (S&P 500)", value=True)
+        
+        if not show_eu and not show_us:
+            st.warning("Please select at least one market to display.")
+            return
     
-    with col2:
-        st.subheader("🎯 Topic Selection")
-        # Get available topics (excluding outliers)
-        topic_info = st.session_state.topic_info
-        available_topics = topic_info[topic_info['Topic'] != -1]['Topic'].tolist()
-        topic_names = st.session_state.topic_names
-        
-        # Create topic options with LLM names
-        topic_options = {f"{topic_names.get(t, f'Topic {t}')} (Topic {t})": t for t in available_topics}
-        
-        selected_topic_display = st.selectbox(
-            "Select Topic to Analyze",
-            options=list(topic_options.keys()),
-            help="Choose a topic to see its evolution over time"
-        )
-        
-        selected_topic = topic_options[selected_topic_display] if selected_topic_display else None
-    
-    return show_eu, show_us, selected_topic_display, selected_topic
-
-def render_time_controls(rag):
-    """Render time period selection controls."""
+    # Time period selection
     st.subheader("📅 Time Period")
     col1, col2 = st.columns([1, 1])
     
@@ -431,34 +585,89 @@ def render_time_controls(rag):
             )
         else:
             st.error("No valid years found in the data.")
-            return None, None
+            return
     
-    return time_granularity, selected_years
+    # Topic selection based on source
+    if selected_source == "BERTopic Analysis":
+        render_bertopic_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity)
+    elif selected_source == "Investment Categories Search":
+        render_topic_search_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity)
+    elif selected_source == "Manual Topics":
+        render_manual_topics_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity)
 
-def render_analysis_controls(rag, selected_topic, selected_topic_display, 
-                           show_eu, show_us, selected_years, time_granularity):
-    """Render analysis type controls and execute analysis."""
-    st.subheader("🔬 Analysis Type")
-    analysis_type = st.radio(
-        "Choose Analysis Type:",
-        ["Single Topic Evolution", "All Topics Evolution"],
-        help="Select whether to analyze one specific topic or all topics together"
+def render_bertopic_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity):
+    """Render evolution analysis for BERTopic results."""
+    st.subheader("🎯 BERTopic Topic Selection")
+    
+    # Get available topics (excluding outliers)
+    topic_info = st.session_state.topic_info
+    available_topics = topic_info[topic_info['Topic'] != -1]['Topic'].tolist()
+    topic_names = st.session_state.topic_names
+    
+    # Create topic options with LLM names
+    topic_options = {f"{topic_names.get(t, f'Topic {t}')} (Topic {t})": t for t in available_topics}
+    
+    selected_topic_display = st.selectbox(
+        "Select Topic to Analyze",
+        options=list(topic_options.keys()),
+        help="Choose a topic to see its evolution over time"
     )
     
-    # Single analysis button
-    if analysis_type == "Single Topic Evolution":
-        if st.button("🔍 Analyze Single Topic Evolution", type="primary"):
-            execute_single_topic_analysis(selected_topic, selected_topic_display, 
-                                         selected_years, time_granularity)
+    selected_topic = topic_options[selected_topic_display] if selected_topic_display else None
     
-    # All topics analysis button
-    else:  # "All Topics Evolution"
-        if st.button("📊 Analyze All Topics Evolution", type="primary"):
-            execute_all_topics_analysis(rag, show_eu, show_us, selected_years, time_granularity)
+    if st.button("🔍 Analyze BERTopic Evolution", type="primary"):
+        execute_bertopic_evolution_analysis(rag, selected_topic, selected_topic_display, 
+                                          show_eu, show_us, selected_years, time_granularity)
 
-def execute_single_topic_analysis(selected_topic, selected_topic_display, selected_years, time_granularity):
-    """Execute single topic evolution analysis."""
-    with st.spinner("Analyzing single topic evolution over time..."):
+def render_topic_search_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity):
+    """Render evolution analysis for topic search results."""
+    st.subheader("🎯 Investment Category Selection")
+    
+    topic_search_results = st.session_state.get('topic_search_results', {})
+    available_topics = list(topic_search_results.keys())
+    
+    selected_topic = st.selectbox(
+        "Select Investment Category to Analyze",
+        options=available_topics,
+        help="Choose an investment category to see its evolution over time"
+    )
+    
+    if st.button("🔍 Analyze Category Evolution", type="primary"):
+        execute_topic_search_evolution_analysis(rag, selected_topic, show_eu, show_us, 
+                                               selected_years, time_granularity)
+
+def render_manual_topics_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity):
+    """Render evolution analysis for manual topics."""
+    st.subheader("🎯 Manual Topic Selection")
+    
+    manual_topics = st.session_state.get('manual_topics', {})
+    available_topics = list(manual_topics.keys())
+    
+    analysis_type = st.radio(
+        "Analysis Type",
+        ["Single Topic", "All Manual Topics"],
+        help="Analyze one topic or compare all manual topics"
+    )
+    
+    if analysis_type == "Single Topic":
+        selected_topic = st.selectbox(
+            "Select Manual Topic to Analyze",
+            options=available_topics,
+            help="Choose a manual topic to see its evolution over time"
+        )
+        
+        if st.button("🔍 Analyze Manual Topic Evolution", type="primary"):
+            execute_manual_topic_evolution_analysis(rag, selected_topic, show_eu, show_us, 
+                                                   selected_years, time_granularity)
+    else:
+        if st.button("📊 Analyze All Manual Topics Evolution", type="primary"):
+            execute_all_manual_topics_evolution_analysis(rag, show_eu, show_us, 
+                                                        selected_years, time_granularity)
+
+def execute_bertopic_evolution_analysis(rag, selected_topic, selected_topic_display, 
+                                       show_eu, show_us, selected_years, time_granularity):
+    """Execute BERTopic evolution analysis."""
+    with st.spinner("Analyzing BERTopic evolution over time..."):
         try:
             topic_model = st.session_state.topic_model
             selected_snippets = get_selected_snippets()
@@ -472,62 +681,221 @@ def execute_single_topic_analysis(selected_topic, selected_topic_display, select
             if not evolution_data:
                 st.warning("No data found for the selected topic and time period.")
             else:
-                # Display evolution charts
                 display_evolution_charts_simple(evolution_data, selected_topic_display, time_granularity)
-                
-                # Display detailed insights
                 display_evolution_insights_simple(evolution_data, selected_topic_display, time_granularity)
-                
-                # Download option
-                df = pd.DataFrame(evolution_data)
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Evolution Data as CSV",
-                    data=csv,
-                    file_name=f"topic_evolution_{selected_topic_display.replace(' ', '_')}.csv",
-                    mime="text/csv"
-                )
                 
         except Exception as e:
             st.error(f"Error analyzing topic evolution: {str(e)}")
-            st.info("Please ensure you have run the topic analysis first and selected valid parameters.")
 
-def execute_all_topics_analysis(rag, show_eu, show_us, selected_years, time_granularity):
-    """Execute all topics evolution analysis."""
-    with st.spinner("Analyzing all topics evolution over time..."):
+def execute_topic_search_evolution_analysis(rag, selected_topic, show_eu, show_us, 
+                                           selected_years, time_granularity):
+    """Execute topic search evolution analysis."""
+    with st.spinner("Analyzing investment category evolution over time..."):
         try:
-            topic_model = st.session_state.topic_model
-            topic_names = st.session_state.topic_names
+            # Get the snippets for this topic
+            topic_search_results = st.session_state.get('topic_search_results', {})
+            topic_snippets = topic_search_results.get(selected_topic, [])
+            
+            if not topic_snippets:
+                st.warning(f"No snippets found for topic: {selected_topic}")
+                return
+            
+            # Analyze evolution using the snippets
+            evolution_data = analyze_snippets_evolution(
+                topic_snippets, selected_topic, show_eu, show_us, 
+                selected_years, time_granularity
+            )
+            
+            if not evolution_data:
+                st.warning("No data found for the selected time period and markets.")
+            else:
+                display_evolution_charts_simple(evolution_data, selected_topic, time_granularity)
+                display_evolution_insights_simple(evolution_data, selected_topic, time_granularity)
+                
+        except Exception as e:
+            st.error(f"Error analyzing category evolution: {str(e)}")
+
+def execute_manual_topic_evolution_analysis(rag, selected_topic, show_eu, show_us, 
+                                           selected_years, time_granularity):
+    """Execute manual topic evolution analysis."""
+    with st.spinner("Analyzing manual topic evolution over time..."):
+        try:
+            # Get the snippets for this manual topic
+            manual_topics = st.session_state.get('manual_topics', {})
+            topic_data = manual_topics.get(selected_topic, {})
+            topic_snippets = topic_data.get('snippets', [])
+            
+            if not topic_snippets:
+                st.warning(f"No snippets found for manual topic: {selected_topic}")
+                return
+            
+            # Analyze evolution using the snippets
+            evolution_data = analyze_snippets_evolution(
+                topic_snippets, selected_topic, show_eu, show_us, 
+                selected_years, time_granularity
+            )
+            
+            if not evolution_data:
+                st.warning("No data found for the selected time period and markets.")
+            else:
+                display_evolution_charts_simple(evolution_data, selected_topic, time_granularity)
+                display_evolution_insights_simple(evolution_data, selected_topic, time_granularity)
+                
+        except Exception as e:
+            st.error(f"Error analyzing manual topic evolution: {str(e)}")
+
+def execute_all_manual_topics_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity):
+    """Execute evolution analysis for all manual topics."""
+    with st.spinner("Analyzing all manual topics evolution over time..."):
+        try:
+            manual_topics = st.session_state.get('manual_topics', {})
+            
+            # Create topic results dict
+            topic_results = {name: data['snippets'] for name, data in manual_topics.items()}
             
             # Analyze all topics evolution
-            all_topics_data, valid_topics = analyze_all_topics_evolution(
-                rag, topic_model, topic_names,
-                show_eu, show_us, selected_years, time_granularity
+            all_topics_data, valid_topics = analyze_all_topics_evolution_from_results(
+                topic_results, show_eu, show_us, selected_years, time_granularity
             )
             
             if not all_topics_data:
                 st.warning("No data found for the selected time period and markets.")
             else:
-                # Display stacked bar chart for all topics
+                # Create topic names dict for visualization
+                topic_names = {i: name for i, name in enumerate(valid_topics)}
+                
                 display_all_topics_stacked_chart(
-                    all_topics_data, valid_topics, topic_names,
+                    all_topics_data, list(range(len(valid_topics))), topic_names,
                     show_eu, show_us, time_granularity
                 )
                 
-                # Display summary statistics
-                display_topics_summary(all_topics_data, valid_topics, topic_names, show_eu, show_us)
-                
-                # Download option for all topics data
-                st.markdown("#### Export All Topics Data")
-                df = pd.DataFrame(all_topics_data)
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download All Topics Evolution Data as CSV",
-                    data=csv,
-                    file_name=f"all_topics_evolution_{time_granularity.lower()}.csv",
-                    mime="text/csv"
-                )
+                display_topics_summary(all_topics_data, list(range(len(valid_topics))), 
+                                     topic_names, show_eu, show_us)
                 
         except Exception as e:
-            st.error(f"Error analyzing all topics evolution: {str(e)}")
-            st.info("Please ensure you have run the topic analysis first and selected valid parameters.")
+            st.error(f"Error analyzing all manual topics evolution: {str(e)}")
+
+def analyze_snippets_evolution(snippets, topic_name, show_eu, show_us, year_range, time_granularity):
+    """Analyze evolution of a specific set of snippets over time."""
+    from utils import determine_market
+    
+    # Filter snippets by market and year range
+    relevant_snippets = []
+    current_market = st.session_state.current_market
+    
+    for snippet in snippets:
+        if snippet.year and str(snippet.year).isdigit():
+            year = int(snippet.year)
+            if year_range[0] <= year <= year_range[1]:
+                # Determine market
+                if current_market == "Full":
+                    market = determine_market(snippet)
+                    if (market == 'EU' and show_eu) or (market == 'US' and show_us):
+                        relevant_snippets.append(snippet)
+                elif current_market == "Combined":
+                    # For combined data, we need to infer the market
+                    market = determine_market(snippet)
+                    if (market == 'EU' and show_eu) or (market == 'US' and show_us):
+                        relevant_snippets.append(snippet)
+                else:
+                    # Single market
+                    if (current_market == "EU" and show_eu) or (current_market == "US" and show_us):
+                        relevant_snippets.append(snippet)
+    
+    # Group by time periods
+    time_groups = {}
+    for snippet in relevant_snippets:
+        if time_granularity == "Yearly":
+            period = str(snippet.year)
+        else:  # Quarterly
+            period = f"{snippet.year}-Q{snippet.quarter}"
+        
+        if period not in time_groups:
+            time_groups[period] = {
+                'count': 0, 
+                'companies': set(), 
+                'sentiment': {'opportunity': 0, 'neutral': 0, 'risk': 0}
+            }
+        
+        time_groups[period]['count'] += 1
+        time_groups[period]['companies'].add(snippet.ticker)
+        if snippet.climate_sentiment:
+            time_groups[period]['sentiment'][snippet.climate_sentiment] += 1
+    
+    # Convert to list format for visualization
+    evolution_data = []
+    for period in sorted(time_groups.keys()):
+        data = time_groups[period]
+        evolution_data.append({
+            'period': period,
+            'count': data['count'],
+            'companies': len(data['companies']),
+            'sentiment_opportunity': data['sentiment']['opportunity'],
+            'sentiment_neutral': data['sentiment']['neutral'],
+            'sentiment_risk': data['sentiment']['risk']
+        })
+    
+    return evolution_data
+
+def analyze_all_topics_evolution_from_results(topic_results, show_eu, show_us, year_range, time_granularity):
+    """Analyze evolution of all topics from results dict."""
+    from utils import determine_market
+    
+    valid_topics = list(topic_results.keys())
+    current_market = st.session_state.current_market
+    
+    # Group by time periods and topics
+    time_groups = {}
+    
+    for topic_name, snippets in topic_results.items():
+        for snippet in snippets:
+            if snippet.year and str(snippet.year).isdigit():
+                year = int(snippet.year)
+                if year_range[0] <= year <= year_range[1]:
+                    # Determine market
+                    if current_market == "Full":
+                        market = determine_market(snippet)
+                    elif current_market == "Combined":
+                        market = determine_market(snippet)
+                    else:
+                        market = current_market
+                    
+                    # Check if we should include this market
+                    if not ((market == 'EU' and show_eu) or (market == 'US' and show_us)):
+                        continue
+                    
+                    # Create period key
+                    if time_granularity == "Yearly":
+                        period = str(snippet.year)
+                    else:  # Quarterly
+                        period = f"{snippet.year}-Q{snippet.quarter}"
+                    
+                    if period not in time_groups:
+                        time_groups[period] = {}
+                    
+                    # Count this topic for this market and period
+                    topic_key = f"{market}_{topic_name}"
+                    if topic_key not in time_groups[period]:
+                        time_groups[period][topic_key] = 0
+                    time_groups[period][topic_key] += 1
+    
+    # Convert to list format for visualization
+    evolution_data = []
+    all_periods = sorted(time_groups.keys()) if time_groups else []
+    
+    for period in all_periods:
+        period_data = {'period': period}
+        
+        # Add counts for each topic and market combination
+        for topic_name in valid_topics:
+            if show_eu:
+                eu_key = f"EU_{topic_name}"
+                period_data[f"EU_{topic_name}"] = time_groups[period].get(eu_key, 0)
+            
+            if show_us:
+                us_key = f"US_{topic_name}"
+                period_data[f"US_{topic_name}"] = time_groups[period].get(us_key, 0)
+        
+        evolution_data.append(period_data)
+    
+    return evolution_data, valid_topics

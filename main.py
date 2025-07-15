@@ -3,7 +3,8 @@ import streamlit as st
 from config import setup_environment, check_required_libraries, APP_CONFIG
 from ui_components import (
     render_sidebar, render_snippet_selection_tab, 
-    render_topic_analysis_tab, render_evolution_analysis_tab
+    render_topic_search_tab, render_manual_topic_id_tab,
+    render_evolution_analysis_tab
 )
 
 def initialize_session_state():
@@ -18,6 +19,10 @@ def initialize_session_state():
         st.session_state.anthropic_api_key = None
     if 'selected_snippets' not in st.session_state:
         st.session_state.selected_snippets = []
+    if 'manual_topics' not in st.session_state:
+        st.session_state.manual_topics = {}
+    if 'topic_search_results' not in st.session_state:
+        st.session_state.topic_search_results = {}
 
 def main():
     """Main application function."""
@@ -62,15 +67,23 @@ def main():
     st.info("🔧 Threading: Single-threaded (macOS optimized)")
     
     # Main interface tabs
-    tab1, tab2, tab3 = st.tabs(["🔍 Snippet Selection", "📈 Topic Analysis", "📊 Evolution Analysis"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🔍 Snippet Selection", 
+        "🎯 Topic Search", 
+        "📝 Manual Topic ID", 
+        "📊 Evolution Analysis"
+    ])
     
     with tab1:
         render_snippet_selection_tab(rag)
     
     with tab2:
-        render_topic_analysis_tab()
+        render_topic_search_tab(rag)
     
     with tab3:
+        render_manual_topic_id_tab(rag)
+    
+    with tab4:
         render_evolution_analysis_tab(rag)
 
 if __name__ == "__main__":
