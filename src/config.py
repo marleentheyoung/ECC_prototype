@@ -3,6 +3,8 @@ import os
 import sys
 import warnings
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 def setup_environment():
     """Setup environment for macOS compatibility and suppress warnings."""
     # Force single-threaded execution for macOS stability

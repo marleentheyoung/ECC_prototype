@@ -1,22 +1,295 @@
 # ui_components.py - UI component functions for different tabs
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 import streamlit as st
 import pandas as pd
 import random
-from config import APP_CONFIG
-from utils import display_results, get_selected_snippets
-from data_loaders import load_market_data
-from topic_analysis import run_topic_analysis, display_topic_results, create_topic_results_dataframe
-from topic_search import (
+from src.config import APP_CONFIG
+from src.utils import display_results, get_selected_snippets
+from src.data_loaders import load_market_data
+# from topic_analysis import run_topic_analysis, display_topic_results, create_topic_results_dataframe
+from src.topic_search import (
     perform_topic_search, validate_topic_relevance_with_llm, 
     analyze_topic_distribution, visualize_topic_comparison, export_topic_results
 )
-from evolution_analysis import analyze_topic_evolution_simple, analyze_all_topics_evolution
-from visualization import (
-    display_topic_distribution, display_evolution_charts_simple, 
-    display_evolution_insights_simple, display_all_topics_stacked_chart, 
-    display_topics_summary
+# At the top of ui_components.py
+from src.simplified_snippet_selection import analyze_snippets_evolution
+from src.adaptive_threshold_validation import AdaptiveThresholdValidator, display_threshold_search_results
+from src.evolution_analysis import analyze_topic_evolution_simple
+from src.visualization import (
+    display_evolution_charts_simple, 
+    display_evolution_insights_simple
 )
-from utils import generate_topic_names
+
+def render_manual_topic_id_tab_with_adaptive_validation(rag):
+    """Enhanced Manual Topic Identification tab with adaptive threshold validation."""
+    st.header("📝 Manual Topic Identification")
+    st.write("Define custom topics using semantic search with adaptive threshold validation")
+    
+    # Topic management interface
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("➕ Add New Topic")
+        
+        # Validation method selection
+        validation_method = st.radio(
+            "Validation Method:",
+            ["Standard Validation", "Adaptive Threshold Search"],
+            help="Choose between fixed threshold or adaptive threshold optimization"
+        )
+        
+        # New topic form
+        with st.form("add_topic_form"):
+            new_topic_name = st.text_input(
+                "Topic Name", 
+                placeholder="e.g., Paris Agreement, EU ETS, Carbon Credits"
+            )
+            new_topic_query = st.text_area(
+                "Search Query", 
+                placeholder="Enter keywords and phrases to search for this topic",
+                help="Use descriptive terms that would appear in earnings calls when discussing this topic"
+            )
+            
+            if validation_method == "Standard Validation":
+                # Standard validation options
+                relevance_threshold = st.slider(
+                    "Relevance Threshold", 
+                    min_value=0.1, 
+                    max_value=0.8, 
+                    value=0.30, 
+                    step=0.05
+                )
+                
+                use_llm_validation = st.checkbox("Use LLM Validation", value=True)
+                
+            else:
+                # Adaptive validation options
+                st.subheader("🎯 Adaptive Search Settings")
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    initial_threshold = st.slider(
+                        "Starting Threshold", 
+                        min_value=0.1, 
+                        max_value=0.6, 
+                        value=0.30, 
+                        step=0.05,
+                        help="Initial threshold to start the adaptive search"
+                    )
+                
+                with col_b:
+                    quality_threshold = st.slider(
+                        "Quality Threshold", 
+                        min_value=0.1, 
+                        max_value=0.5, 
+                        value=0.25, 
+                        step=0.05,
+                        help="Maximum % of irrelevant snippets allowed (25% = 5 out of 20)"
+                    )
+                
+                st.info("💡 The system will automatically find the optimal threshold where ≤25% of boundary snippets are irrelevant")
+            
+            submitted = st.form_submit_button("🔍 Search & Add Topic", type="primary")
+            
+        # Handle form submission outside the form
+        if submitted and new_topic_name and new_topic_query:
+        # Handle form submission outside the form
+            if validation_method == "Standard Validation":
+                add_manual_topic_standard(rag, new_topic_name, new_topic_query, 
+                                        relevance_threshold, use_llm_validation)
+            else:
+                add_manual_topic_adaptive(rag, new_topic_name, new_topic_query, 
+                                        initial_threshold, quality_threshold)
+        
+    with col2:
+        st.subheader("📋 Current Topics")
+        manual_topics = st.session_state.get('manual_topics', {})
+        
+        if manual_topics:
+            for topic_name, topic_data in manual_topics.items():
+                with st.expander(f"{topic_name} ({len(topic_data['snippets'])} snippets)"):
+                    st.write(f"**Query:** {topic_data['query']}")
+                    
+                    if 'adaptive_results' in topic_data:
+                        # Show adaptive validation results
+                        st.write(f"**Method:** Adaptive (Final threshold: {topic_data['adaptive_results']['final_threshold']:.2f})")
+                        st.write(f"**API calls used:** {topic_data['adaptive_results']['total_api_calls']}")
+                    else:
+                        # Show standard validation results
+                        st.write(f"**Threshold:** {topic_data.get('threshold', 'N/A')}")
+                        st.write(f"**Method:** Standard")
+                    
+                    st.write(f"**Validated:** {'Yes' if topic_data.get('validated', False) else 'No'}")
+                    
+                    if st.button(f"🗑️ Remove {topic_name}", key=f"remove_{topic_name}"):
+                        remove_manual_topic(topic_name)
+                        st.rerun()
+        else:
+            st.info("No custom topics defined yet.")
+    
+    # Display current manual topics results
+    if st.session_state.get('manual_topics'):
+        st.markdown("---")
+        display_manual_topics_overview()
+
+def add_manual_topic_standard(rag, topic_name, query, threshold, use_validation):
+    """Add a manual topic using standard validation method."""
+    with st.spinner(f"Searching for topic: {topic_name}..."):
+        # Perform semantic search
+        from src.topic_search import perform_topic_search, validate_topic_relevance_with_llm
+        
+        search_results = perform_topic_search(rag, {topic_name: query}, threshold)
+        snippets = search_results.get(topic_name, [])
+        
+        # LLM validation if requested
+        if use_validation and st.session_state.get('anthropic_api_key') and snippets:
+            st.info("🤖 Validating with LLM...")
+            snippets = validate_topic_relevance_with_llm(
+                snippets, topic_name, query, st.session_state.anthropic_api_key
+            )
+        
+        # Store in session state
+        if 'manual_topics' not in st.session_state:
+            st.session_state.manual_topics = {}
+        
+        st.session_state.manual_topics[topic_name] = {
+            'query': query,
+            'threshold': threshold,
+            'validated': use_validation,
+            'snippets': snippets,
+            'method': 'standard'
+        }
+        
+        st.success(f"✅ Added topic '{topic_name}' with {len(snippets)} snippets!")
+
+def add_manual_topic_adaptive(rag, topic_name, query, initial_threshold, quality_threshold):
+    """Add a manual topic using adaptive threshold validation."""
+    if not st.session_state.get('anthropic_api_key'):
+        st.error("❌ Anthropic API key required for adaptive validation!")
+        return
+    
+    st.info("🚀 Starting adaptive threshold search...")
+    
+    # Initialize validator
+    validator = AdaptiveThresholdValidator(st.session_state.anthropic_api_key)
+    validator.irrelevant_threshold = quality_threshold
+    
+    # Run adaptive search
+    try:
+        validation_result = validator.adaptive_threshold_search(
+            rag, topic_name, query, initial_threshold
+        )
+        
+        if validation_result:
+            # Store in session state
+            if 'manual_topics' not in st.session_state:
+                st.session_state.manual_topics = {}
+            
+            st.session_state.manual_topics[topic_name] = {
+                'query': query,
+                'threshold': validation_result['final_threshold'],
+                'validated': True,
+                'snippets': validation_result['validated_snippets'],
+                'method': 'adaptive',
+                'adaptive_results': validation_result
+            }
+            
+            # Display results
+            display_threshold_search_results(validation_result)
+            
+            st.success(f"✅ Added topic '{topic_name}' with optimized threshold {validation_result['final_threshold']:.2f} and {len(validation_result['validated_snippets'])} high-quality snippets!")
+        
+    except Exception as e:
+        st.error(f"❌ Error during adaptive search: {str(e)}")
+
+# def display_manual_topics_overview():
+#     """Display overview of all manual topics with method comparison."""
+#     st.subheader("📊 Manual Topics Overview")
+    
+#     manual_topics = st.session_state.get('manual_topics', {})
+#     if not manual_topics:
+#         return
+    
+#     # Create comparison table
+#     comparison_data = []
+#     for topic_name, topic_data in manual_topics.items():
+#         snippets = topic_data['snippets']
+        
+#         # Basic stats
+#         companies = len(set(s.ticker for s in snippets)) if snippets else 0
+#         avg_score = sum(getattr(s, 'score', 0.5) for s in snippets) / len(snippets) if snippets else 0
+        
+#         # Sentiment analysis
+#         sentiment_counts = {'opportunity': 0, 'risk': 0, 'neutral': 0}
+#         for snippet in snippets:
+#             sentiment = getattr(snippet, 'climate_sentiment', 'neutral')
+#             if sentiment in sentiment_counts:
+#                 sentiment_counts[sentiment] += 1
+        
+#         # Method-specific info
+#         if topic_data.get('method') == 'adaptive':
+#             method_info = f"Adaptive (API calls: {topic_data['adaptive_results']['total_api_calls']})"
+#             threshold_info = f"{topic_data['adaptive_results']['final_threshold']:.2f} (optimized)"
+#         else:
+#             method_info = "Standard"
+#             threshold_info = f"{topic_data.get('threshold', 'N/A'):.2f} (fixed)"
+        
+#         comparison_data.append({
+#             'Topic': topic_name,
+#             'Method': method_info,
+#             'Threshold': threshold_info,
+#             'Snippets': len(snippets),
+#             'Companies': companies,
+#             'Avg Score': f"{avg_score:.3f}",
+#             'Opportunity': sentiment_counts['opportunity'],
+#             'Risk': sentiment_counts['risk'],
+#             'Neutral': sentiment_counts['neutral']
+#         })
+    
+#     comparison_df = pd.DataFrame(comparison_data)
+#     st.dataframe(comparison_df, use_container_width=True)
+    
+#     # Method comparison insights
+#     adaptive_topics = [t for t, d in manual_topics.items() if d.get('method') == 'adaptive']
+#     standard_topics = [t for t, d in manual_topics.items() if d.get('method') != 'adaptive']
+    
+#     if adaptive_topics and standard_topics:
+#         st.subheader("🔍 Method Comparison")
+        
+#         col1, col2 = st.columns(2)
+        
+#         with col1:
+#             st.write("**Adaptive Method Benefits:**")
+#             st.write("- Optimized thresholds for each topic")
+#             st.write("- Quality-controlled results")
+#             st.write("- User feedback integration")
+#             st.write("- Minimal false positives")
+        
+#         with col2:
+#             st.write("**Standard Method Benefits:**")
+#             st.write("- Faster processing")
+#             st.write("- Lower API costs")
+#             st.write("- User-controlled thresholds")
+#             st.write("- Good for exploratory analysis")
+    
+    # Visualizations (reuse existing functions from topic_search.py)
+    # from topic_search import analyze_topic_distribution, visualize_topic_comparison, export_topic_results
+    
+    # topic_results = {name: data['snippets'] for name, data in manual_topics.items()}
+    # analysis_df = analyze_topic_distribution(topic_results)
+    # visualize_topic_comparison(analysis_df)
+    
+    # # Export functionality
+    # st.markdown("#### Export Manual Topics")
+    # export_topic_results(topic_results, "manual_topics_with_adaptive_validation")
+
+# Add this to your main interface.py file to replace the existing manual topic tab
+def render_enhanced_manual_topic_tab(rag):
+    """Main function to call from interface.py"""
+    render_manual_topic_id_tab_with_adaptive_validation(rag)
 
 def render_sidebar():
     """Render the sidebar with market selection and API key input."""
@@ -157,93 +430,6 @@ def render_topic_search_tab(rag):
             
             # Display results
             display_topic_search_results(topic_results)
-
-def render_manual_topic_id_tab(rag):
-    """Render the manual topic identification tab."""
-    st.header("📝 Manual Topic Identification")
-    st.write("Define custom topics using semantic search queries")
-    
-    # Topic management interface
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.subheader("➕ Add New Topic")
-        
-        # New topic form
-        with st.form("add_topic_form"):
-            new_topic_name = st.text_input(
-                "Topic Name", 
-                placeholder="e.g., Paris Agreement, EU ETS, Carbon Credits"
-            )
-            new_topic_query = st.text_area(
-                "Search Query", 
-                placeholder="Enter keywords and phrases to search for this topic",
-                help="Use descriptive terms that would appear in earnings calls when discussing this topic"
-            )
-            
-            relevance_threshold = st.slider(
-                "Relevance Threshold", 
-                min_value=0.1, 
-                max_value=0.8, 
-                value=0.30, 
-                step=0.05
-            )
-            
-            use_llm_validation = st.checkbox("Use LLM Validation", value=True)
-            
-            submitted = st.form_submit_button("🔍 Search & Add Topic")
-            
-            if submitted and new_topic_name and new_topic_query:
-                add_manual_topic(rag, new_topic_name, new_topic_query, relevance_threshold, use_llm_validation)
-    
-    with col2:
-        st.subheader("📋 Current Topics")
-        manual_topics = st.session_state.get('manual_topics', {})
-        
-        if manual_topics:
-            for topic_name, topic_data in manual_topics.items():
-                with st.expander(f"{topic_name} ({len(topic_data['snippets'])} snippets)"):
-                    st.write(f"**Query:** {topic_data['query']}")
-                    st.write(f"**Threshold:** {topic_data['threshold']}")
-                    st.write(f"**Validated:** {'Yes' if topic_data.get('validated', False) else 'No'}")
-                    
-                    if st.button(f"🗑️ Remove {topic_name}", key=f"remove_{topic_name}"):
-                        remove_manual_topic(topic_name)
-                        st.rerun()
-        else:
-            st.info("No custom topics defined yet.")
-    
-    # Display current manual topics results
-    if st.session_state.get('manual_topics'):
-        st.markdown("---")
-        display_manual_topics_overview()
-
-def add_manual_topic(rag, topic_name, query, threshold, use_validation):
-    """Add a new manual topic and perform search."""
-    with st.spinner(f"Searching for topic: {topic_name}..."):
-        # Perform semantic search
-        search_results = perform_topic_search(rag, {topic_name: query}, threshold)
-        snippets = search_results.get(topic_name, [])
-        
-        # LLM validation if requested
-        if use_validation and st.session_state.get('anthropic_api_key') and snippets:
-            st.info("🤖 Validating with LLM...")
-            snippets = validate_topic_relevance_with_llm(
-                snippets, topic_name, query, st.session_state.anthropic_api_key
-            )
-        
-        # Store in session state
-        if 'manual_topics' not in st.session_state:
-            st.session_state.manual_topics = {}
-        
-        st.session_state.manual_topics[topic_name] = {
-            'query': query,
-            'threshold': threshold,
-            'validated': use_validation,
-            'snippets': snippets
-        }
-        
-        st.success(f"✅ Added topic '{topic_name}' with {len(snippets)} snippets!")
 
 def remove_manual_topic(topic_name):
     """Remove a manual topic."""
@@ -715,131 +901,9 @@ def execute_topic_search_evolution_analysis(rag, selected_topic, show_eu, show_u
         except Exception as e:
             st.error(f"Error analyzing category evolution: {str(e)}")
 
-def execute_manual_topic_evolution_analysis(rag, selected_topic, show_eu, show_us, 
-                                           selected_years, time_granularity):
-    """Execute manual topic evolution analysis."""
-    with st.spinner("Analyzing manual topic evolution over time..."):
-        try:
-            # Get the snippets for this manual topic
-            manual_topics = st.session_state.get('manual_topics', {})
-            topic_data = manual_topics.get(selected_topic, {})
-            topic_snippets = topic_data.get('snippets', [])
-            
-            if not topic_snippets:
-                st.warning(f"No snippets found for manual topic: {selected_topic}")
-                return
-            
-            # Analyze evolution using the snippets
-            evolution_data = analyze_snippets_evolution(
-                topic_snippets, selected_topic, show_eu, show_us, 
-                selected_years, time_granularity
-            )
-            
-            if not evolution_data:
-                st.warning("No data found for the selected time period and markets.")
-            else:
-                display_evolution_charts_simple(evolution_data, selected_topic, time_granularity)
-                display_evolution_insights_simple(evolution_data, selected_topic, time_granularity)
-                
-        except Exception as e:
-            st.error(f"Error analyzing manual topic evolution: {str(e)}")
-
-def execute_all_manual_topics_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity):
-    """Execute evolution analysis for all manual topics."""
-    with st.spinner("Analyzing all manual topics evolution over time..."):
-        try:
-            manual_topics = st.session_state.get('manual_topics', {})
-            
-            # Create topic results dict
-            topic_results = {name: data['snippets'] for name, data in manual_topics.items()}
-            
-            # Analyze all topics evolution
-            all_topics_data, valid_topics = analyze_all_topics_evolution_from_results(
-                topic_results, show_eu, show_us, selected_years, time_granularity
-            )
-            
-            if not all_topics_data:
-                st.warning("No data found for the selected time period and markets.")
-            else:
-                # Create topic names dict for visualization
-                topic_names = {i: name for i, name in enumerate(valid_topics)}
-                
-                display_all_topics_stacked_chart(
-                    all_topics_data, list(range(len(valid_topics))), topic_names,
-                    show_eu, show_us, time_granularity
-                )
-                
-                display_topics_summary(all_topics_data, list(range(len(valid_topics))), 
-                                     topic_names, show_eu, show_us)
-                
-        except Exception as e:
-            st.error(f"Error analyzing all manual topics evolution: {str(e)}")
-
-def analyze_snippets_evolution(snippets, topic_name, show_eu, show_us, year_range, time_granularity):
-    """Analyze evolution of a specific set of snippets over time."""
-    from utils import determine_market
-    
-    # Filter snippets by market and year range
-    relevant_snippets = []
-    current_market = st.session_state.current_market
-    
-    for snippet in snippets:
-        if snippet.year and str(snippet.year).isdigit():
-            year = int(snippet.year)
-            if year_range[0] <= year <= year_range[1]:
-                # Determine market
-                if current_market == "Full":
-                    market = determine_market(snippet)
-                    if (market == 'EU' and show_eu) or (market == 'US' and show_us):
-                        relevant_snippets.append(snippet)
-                elif current_market == "Combined":
-                    # For combined data, we need to infer the market
-                    market = determine_market(snippet)
-                    if (market == 'EU' and show_eu) or (market == 'US' and show_us):
-                        relevant_snippets.append(snippet)
-                else:
-                    # Single market
-                    if (current_market == "EU" and show_eu) or (current_market == "US" and show_us):
-                        relevant_snippets.append(snippet)
-    
-    # Group by time periods
-    time_groups = {}
-    for snippet in relevant_snippets:
-        if time_granularity == "Yearly":
-            period = str(snippet.year)
-        else:  # Quarterly
-            period = f"{snippet.year}-Q{snippet.quarter}"
-        
-        if period not in time_groups:
-            time_groups[period] = {
-                'count': 0, 
-                'companies': set(), 
-                'sentiment': {'opportunity': 0, 'neutral': 0, 'risk': 0}
-            }
-        
-        time_groups[period]['count'] += 1
-        time_groups[period]['companies'].add(snippet.ticker)
-        if snippet.climate_sentiment:
-            time_groups[period]['sentiment'][snippet.climate_sentiment] += 1
-    
-    # Convert to list format for visualization
-    evolution_data = []
-    for period in sorted(time_groups.keys()):
-        data = time_groups[period]
-        evolution_data.append({
-            'period': period,
-            'count': data['count'],
-            'companies': len(data['companies']),
-            'sentiment_opportunity': data['sentiment']['opportunity'],
-            'sentiment_neutral': data['sentiment']['neutral'],
-            'sentiment_risk': data['sentiment']['risk']
-        })
-    
-    return evolution_data
-
 def analyze_all_topics_evolution_from_results(topic_results, show_eu, show_us, year_range, time_granularity):
     """Analyze evolution of all topics from results dict."""
-    from utils import determine_market
+    from src.utils import determine_market
     
     valid_topics = list(topic_results.keys())
     current_market = st.session_state.current_market
@@ -899,3 +963,138 @@ def analyze_all_topics_evolution_from_results(topic_results, show_eu, show_us, y
         evolution_data.append(period_data)
     
     return evolution_data, valid_topics
+
+def execute_manual_topic_evolution_analysis(rag, selected_topic, show_eu, show_us, 
+                                           selected_years, time_granularity):
+    """Execute manual topic evolution analysis."""
+    with st.spinner("Analyzing manual topic evolution over time..."):
+        try:
+            from src.evolution_analysis import analyze_snippets_evolution
+            from src.visualization import display_evolution_charts_simple, display_evolution_insights_simple
+            
+            # Get the snippets for this manual topic
+            manual_topics = st.session_state.get('manual_topics', {})
+            topic_data = manual_topics.get(selected_topic, {})
+            topic_snippets = topic_data.get('snippets', [])
+            
+            if not topic_snippets:
+                st.warning(f"No snippets found for manual topic: {selected_topic}")
+                return
+            
+            # Analyze evolution using the snippets
+            evolution_data = analyze_snippets_evolution(
+                topic_snippets, selected_topic, show_eu, show_us, 
+                selected_years, time_granularity
+            )
+            
+            if not evolution_data:
+                st.warning("No data found for the selected time period and markets.")
+            else:
+                display_evolution_charts_simple(evolution_data, selected_topic, time_granularity)
+                display_evolution_insights_simple(evolution_data, selected_topic, time_granularity)
+                
+        except Exception as e:
+            st.error(f"Error analyzing manual topic evolution: {str(e)}")
+
+def execute_all_manual_topics_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity):
+    """Execute evolution analysis for all manual topics."""
+    with st.spinner("Analyzing all manual topics evolution over time..."):
+        try:
+            from src.evolution_analysis import analyze_all_topics_evolution_from_results
+            from src.visualization import display_all_topics_stacked_chart, display_topics_summary
+            
+            manual_topics = st.session_state.get('manual_topics', {})
+            
+            # Create topic results dict
+            topic_results = {name: data['snippets'] for name, data in manual_topics.items()}
+            
+            # Analyze all topics evolution
+            all_topics_data, valid_topics = analyze_all_topics_evolution_from_results(
+                topic_results, show_eu, show_us, selected_years, time_granularity
+            )
+            
+            if not all_topics_data:
+                st.warning("No data found for the selected time period and markets.")
+            else:
+                # Create topic names dict for visualization
+                topic_names_for_viz = {i: name for i, name in enumerate(valid_topics)}
+                
+                display_all_topics_stacked_chart(
+                    all_topics_data, list(range(len(valid_topics))), topic_names_for_viz,
+                    show_eu, show_us, time_granularity
+                )
+                
+                display_topics_summary(all_topics_data, list(range(len(valid_topics))), 
+                                     topic_names_for_viz, show_eu, show_us)
+                
+        except Exception as e:
+            st.error(f"Error analyzing all manual topics evolution: {str(e)}")
+
+def render_manual_topics_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity):
+    """Render evolution analysis for manual topics."""
+    st.subheader("🎯 Manual Topic Selection")
+    
+    manual_topics = st.session_state.get('manual_topics', {})
+    available_topics = list(manual_topics.keys())
+    
+    if not available_topics:
+        st.warning("No manual topics defined yet.")
+        st.info("Go to the 'Manual Topic ID' tab to create custom topics first.")
+        return
+    
+    analysis_type = st.radio(
+        "Analysis Type",
+        ["Single Topic", "All Manual Topics"],
+        help="Analyze one topic or compare all manual topics"
+    )
+    
+    if analysis_type == "Single Topic":
+        selected_topic = st.selectbox(
+            "Select Manual Topic to Analyze",
+            options=available_topics,
+            help="Choose a manual topic to see its evolution over time"
+        )
+        
+        if st.button("🔍 Analyze Manual Topic Evolution", type="primary"):
+            execute_manual_topic_evolution_analysis(rag, selected_topic, show_eu, show_us, 
+                                                   selected_years, time_granularity)
+    else:
+        st.write("Analyze how all manual topics evolve over time")
+        
+        if st.button("📊 Analyze All Manual Topics Evolution", type="primary"):
+            execute_all_manual_topics_evolution_analysis(rag, show_eu, show_us, 
+                                                        selected_years, time_granularity)
+
+def execute_all_manual_topics_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity):
+    """Execute evolution analysis for all manual topics."""
+    with st.spinner("Analyzing all manual topics evolution over time..."):
+        try:
+            from src.evolution_analysis import analyze_all_topics_evolution_from_results
+            from src.visualization import display_all_topics_stacked_chart, display_topics_summary
+            
+            manual_topics = st.session_state.get('manual_topics', {})
+            
+            # Create topic results dict
+            topic_results = {name: data['snippets'] for name, data in manual_topics.items()}
+            
+            # Analyze all topics evolution
+            all_topics_data, valid_topics = analyze_all_topics_evolution_from_results(
+                topic_results, show_eu, show_us, selected_years, time_granularity
+            )
+            
+            if not all_topics_data:
+                st.warning("No data found for the selected time period and markets.")
+            else:
+                # Create topic names dict for visualization
+                topic_names_for_viz = {i: name for i, name in enumerate(valid_topics)}
+                
+                display_all_topics_stacked_chart(
+                    all_topics_data, list(range(len(valid_topics))), topic_names_for_viz,
+                    show_eu, show_us, time_granularity
+                )
+                
+                display_topics_summary(all_topics_data, list(range(len(valid_topics))), 
+                                     topic_names_for_viz, show_eu, show_us)
+                
+        except Exception as e:
+            st.error(f"Error analyzing all manual topics evolution: {str(e)}")

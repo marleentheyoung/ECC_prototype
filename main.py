@@ -1,11 +1,16 @@
 # main.py - Main application file
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 import streamlit as st
-from config import setup_environment, check_required_libraries, APP_CONFIG
-from ui_components import (
-    render_sidebar, render_snippet_selection_tab, 
-    render_topic_search_tab, render_manual_topic_id_tab,
-    render_evolution_analysis_tab
+from src.config import setup_environment, check_required_libraries, APP_CONFIG
+from src.ui_components import (
+    render_sidebar, render_evolution_analysis_tab, render_enhanced_manual_topic_tab
 )
+from src.topic_analysis import run_topic_analysis, display_topic_results, create_topic_results_dataframe
+from src.utils import generate_topic_names
+from src.simplified_snippet_selection import render_simplified_snippet_selection
 
 def initialize_session_state():
     """Initialize session state variables."""
@@ -75,16 +80,105 @@ def main():
     ])
     
     with tab1:
-        render_snippet_selection_tab(rag)
+        render_simplified_snippet_selection(rag)  # New simplified version
     
     with tab2:
-        render_topic_search_tab(rag)
+        render_topic_analysis_tab(rag)  # Restored BERTopic functionality
     
     with tab3:
-        render_manual_topic_id_tab(rag)
+        render_enhanced_manual_topic_tab(rag)  # Existing with adaptive validation
     
     with tab4:
-        render_evolution_analysis_tab(rag)
+        render_evolution_analysis_tab(rag)  # Existing
+
+def render_topic_analysis_tab(rag):
+    """Render the BERTopic analysis tab."""
+    st.header("📈 Topic Analysis")
+    
+    # Check if snippets are selected
+    selected_snippets = st.session_state.get('selected_snippets', [])
+    
+    if not selected_snippets:
+        st.warning("⚠️ No snippets selected for analysis.")
+        st.info("Go to the 'Snippet Selection' tab first to select snippets.")
+        return
+    
+    st.info(f"📊 Ready to analyze {len(selected_snippets)} selected snippets")
+    st.write(f"**Selection method:** {st.session_state.get('selection_method', 'Unknown')}")
+    
+    # Topic analysis parameters
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        nr_topics = st.slider("Number of Topics to Find", 
+                             min_value=2, 
+                             max_value=min(15, len(selected_snippets)//20),
+                             value=min(6, len(selected_snippets)//20))
+    
+    with col2:
+        st.subheader("Analysis Info")
+        st.metric("Selected Snippets", len(selected_snippets))
+        st.metric("Max Topics", min(15, len(selected_snippets)//20))
+    
+    if st.button("🚀 Run Topic Analysis", type="primary"):
+        with st.spinner("Running topic analysis..."):
+            try:
+                # Run topic analysis
+                topic_model, topics, topic_info = run_topic_analysis(selected_snippets, nr_topics)
+                
+                if topic_model is None:
+                    return
+                
+                # Generate topic names
+                st.subheader("🤖 Generating Topic Names...")
+                with st.spinner("Generating meaningful topic names using LLM..."):
+                    topic_names = generate_topic_names(
+                        topic_model, 
+                        topic_info, 
+                        st.session_state.get('anthropic_api_key')
+                    )
+                
+                # Display results
+                display_topic_results(topic_model, topic_info, topic_names)
+                
+                # Show topic distribution chart
+                st.subheader("📊 Topic Distribution")
+                topic_counts = topic_info[topic_info['Topic'] != -1]['Count'].tolist()
+                topic_labels = [topic_names.get(t, f"Topic {t}") for t in topic_info[topic_info['Topic'] != -1]['Topic'].tolist()]
+                
+                if topic_counts and topic_labels:
+                    fig = px.bar(
+                        x=topic_labels, 
+                        y=topic_counts,
+                        title="Number of Documents per Topic",
+                        labels={'x': 'Topic', 'y': 'Document Count'}
+                    )
+                    fig.update_xaxes(tickangle=45)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Store results in session state for evolution analysis
+                st.session_state.topic_model = topic_model
+                st.session_state.topic_names = topic_names
+                st.session_state.topic_info = topic_info
+                st.session_state.topics = topics
+                
+                # Export functionality
+                st.markdown("#### 📥 Export Results")
+                results_df = create_topic_results_dataframe(selected_snippets, topics, topic_names)
+                csv = results_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Topic Analysis Results as CSV",
+                    data=csv,
+                    file_name="topic_analysis_results.csv",
+                    mime="text/csv"
+                )
+                
+                st.success("✅ Topic analysis completed! Go to 'Evolution Analysis' tab to analyze trends over time.")
+                
+            except Exception as e:
+                st.error(f"Error running topic analysis: {str(e)}")
+                st.info("Try reducing the number of topics or selecting more snippets.")
+
 
 if __name__ == "__main__":
     main()

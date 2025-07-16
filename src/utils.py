@@ -1,7 +1,10 @@
 # utils.py - Utility functions
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 import streamlit as st
 import pandas as pd
-import os
 from typing import List, Dict, Any
 from collections import Counter
 from anthropic import Anthropic
@@ -77,7 +80,7 @@ def display_results(results):
 
 def generate_topic_names(topic_model, topic_info: pd.DataFrame, api_key: str = None) -> Dict[int, str]:
     """Generate meaningful topic names using Anthropic Claude based on top words for each topic."""
-    from config import CLAUDE_CONFIG
+    from src.config import CLAUDE_CONFIG
     
     topic_names = {}
 

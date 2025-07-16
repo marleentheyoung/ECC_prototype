@@ -1,5 +1,7 @@
 # green_investment_rag.py
-# author details
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from sentence_transformers import SentenceTransformer
 import numpy as np

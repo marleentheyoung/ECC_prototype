@@ -1,6 +1,10 @@
 # data_loaders.py - Data loading and caching functions
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 import streamlit as st
-from green_investment_rag import GreenInvestmentRAG
+from src.green_investment_rag import GreenInvestmentRAG
 
 @st.cache_resource
 def load_eu_rag():

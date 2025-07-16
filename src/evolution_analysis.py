@@ -1,11 +1,15 @@
 # evolution_analysis.py - Topic evolution analysis functions
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from utils import get_snippet_topics, determine_market, snippet_matches_topic
-from data_loaders import load_eu_rag, load_us_rag
+from src.utils import get_snippet_topics, determine_market, snippet_matches_topic
+from src.data_loaders import load_eu_rag, load_us_rag
 
 def analyze_topic_evolution_simple(selected_snippets, topic_model, selected_topic, year_range, time_granularity, topic_names):
     """Analyze how a specific topic evolves over time for selected snippets."""
@@ -296,6 +300,133 @@ def analyze_topic_evolution(rag, topic_model, selected_topic, show_eu, show_us, 
             'US_sentiment_opportunity': data['US_sentiment']['opportunity'] if show_us else 0,
             'US_sentiment_neutral': data['US_sentiment']['neutral'] if show_us else 0,
             'US_sentiment_risk': data['US_sentiment']['risk'] if show_us else 0
+        })
+    
+    return evolution_data
+
+# Add this to your evolution_analysis.py file
+
+def analyze_all_topics_evolution_from_results(topic_results, show_eu, show_us, year_range, time_granularity):
+    """Analyze evolution of all topics from results dict."""
+    from src.utils import determine_market
+    
+    valid_topics = list(topic_results.keys())
+    current_market = st.session_state.current_market
+    
+    # Group by time periods and topics
+    time_groups = {}
+    
+    for topic_name, snippets in topic_results.items():
+        for snippet in snippets:
+            if snippet.year and str(snippet.year).isdigit():
+                year = int(snippet.year)
+                if year_range[0] <= year <= year_range[1]:
+                    # Determine market
+                    if current_market == "Full":
+                        market = determine_market(snippet)
+                    elif current_market == "Combined":
+                        market = determine_market(snippet)
+                    else:
+                        market = current_market
+                    
+                    # Check if we should include this market
+                    if not ((market == 'EU' and show_eu) or (market == 'US' and show_us)):
+                        continue
+                    
+                    # Create period key
+                    if time_granularity == "Yearly":
+                        period = str(snippet.year)
+                    else:  # Quarterly
+                        period = f"{snippet.year}-Q{snippet.quarter}"
+                    
+                    if period not in time_groups:
+                        time_groups[period] = {}
+                    
+                    # Count this topic for this market and period
+                    topic_key = f"{market}_{topic_name}"
+                    if topic_key not in time_groups[period]:
+                        time_groups[period][topic_key] = 0
+                    time_groups[period][topic_key] += 1
+    
+    # Convert to list format for visualization
+    evolution_data = []
+    all_periods = sorted(time_groups.keys()) if time_groups else []
+    
+    for period in all_periods:
+        period_data = {'period': period}
+        
+        # Add counts for each topic and market combination
+        for topic_name in valid_topics:
+            if show_eu:
+                eu_key = f"EU_{topic_name}"
+                period_data[f"EU_{topic_name}"] = time_groups[period].get(eu_key, 0)
+            
+            if show_us:
+                us_key = f"US_{topic_name}"
+                period_data[f"US_{topic_name}"] = time_groups[period].get(us_key, 0)
+        
+        evolution_data.append(period_data)
+    
+    return evolution_data, valid_topics
+
+def analyze_snippets_evolution(snippets, topic_name, show_eu, show_us, year_range, time_granularity):
+    """Analyze evolution of a specific set of snippets over time."""
+    from src.utils import determine_market
+    
+    # Filter snippets by market and year range
+    relevant_snippets = []
+    current_market = st.session_state.current_market
+    
+    for snippet in snippets:
+        if snippet.year and str(snippet.year).isdigit():
+            year = int(snippet.year)
+            if year_range[0] <= year <= year_range[1]:
+                # Determine market
+                if current_market == "Full":
+                    market = determine_market(snippet)
+                    if (market == 'EU' and show_eu) or (market == 'US' and show_us):
+                        relevant_snippets.append(snippet)
+                elif current_market == "Combined":
+                    # For combined data, we need to infer the market
+                    market = determine_market(snippet)
+                    if (market == 'EU' and show_eu) or (market == 'US' and show_us):
+                        relevant_snippets.append(snippet)
+                else:
+                    # Single market
+                    if (current_market == "EU" and show_eu) or (current_market == "US" and show_us):
+                        relevant_snippets.append(snippet)
+    
+    # Group by time periods
+    time_groups = {}
+    for snippet in relevant_snippets:
+        if time_granularity == "Yearly":
+            period = str(snippet.year)
+        else:  # Quarterly
+            period = f"{snippet.year}-Q{snippet.quarter}"
+        
+        if period not in time_groups:
+            time_groups[period] = {
+                'count': 0, 
+                'companies': set(), 
+                'sentiment': {'opportunity': 0, 'neutral': 0, 'risk': 0}
+            }
+        
+        time_groups[period]['count'] += 1
+        time_groups[period]['companies'].add(snippet.ticker)
+        if snippet.climate_sentiment:
+            time_groups[period]['sentiment'][snippet.climate_sentiment] += 1
+    
+    # Convert to list format for visualization
+    evolution_data = []
+    for period in sorted(time_groups.keys()):
+        data = time_groups[period]
+        evolution_data.append({
+            'period': period,
+            'count': data['count'],
+            'companies': len(data['companies']),
+            'sentiment_opportunity': data['sentiment']['opportunity'],
+            'sentiment_neutral': data['sentiment']['neutral'],
+            'sentiment_risk': data['sentiment']['risk']
         })
     
     return evolution_data

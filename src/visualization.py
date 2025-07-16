@@ -1,9 +1,12 @@
 # visualization.py - Visualization and charting functions
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 
 def display_topic_distribution(topic_info, topic_names):
     """Display topic distribution chart."""
