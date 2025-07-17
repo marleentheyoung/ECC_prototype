@@ -1,13 +1,10 @@
 # main.py - Streamlined main application file
 import streamlit as st
 from src.config import setup_environment, check_required_libraries, APP_CONFIG
-from src.data_loaders import load_market_data
-from src.ui_components import (
-    render_sidebar, 
-    render_evolution_analysis_tab, 
-    render_enhanced_manual_topic_tab, 
-    render_event_studies_tab
-)
+from src.ui_components import render_sidebar
+from tabs.event_studies import render_event_studies_tab
+from tabs.manual_topics import render_manual_topics_tab
+from tabs.evolution_analysis import render_evolution_analysis_tab  # Fixed import
 from src.simplified_snippet_selection import render_simplified_snippet_selection
 from src.topic_analysis import run_topic_analysis, display_topic_results, create_topic_results_dataframe
 from src.utils import generate_topic_names
@@ -187,7 +184,7 @@ def main():
         render_topic_analysis_tab(rag)
     
     with tab3:
-        render_enhanced_manual_topic_tab(rag)
+        render_manual_topics_tab(rag)
     
     with tab4:
         render_event_studies_tab(rag)

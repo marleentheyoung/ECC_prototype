@@ -94,10 +94,6 @@ def display_data_status():
     else:
         st.warning("⚠️ No data loaded")
 
-def render_enhanced_manual_topic_tab(rag):
-    """Wrapper for the new manual topics tab."""
-    render_manual_topics_tab(rag)
-
 def render_selection_status():
     """Display current snippet selection status."""
     selected_snippets = st.session_state.get('selected_snippets', [])
@@ -297,13 +293,6 @@ def display_snippet_preview(snippets, max_preview=3):
     
     if len(snippets) > max_preview:
         st.caption(f"Showing {max_preview} of {len(snippets)} snippets")
-
-# Legacy wrapper functions for backward compatibility
-def render_evolution_analysis_tab(rag):
-    """Evolution analysis tab - delegated to existing implementation."""
-    # Import here to avoid circular dependencies
-    from src.ui_components_legacy import render_evolution_analysis_tab as legacy_evolution
-    legacy_evolution(rag)
 
 # Simple error handling decorator
 def handle_ui_errors(func):
