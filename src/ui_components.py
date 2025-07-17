@@ -6,6 +6,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 import streamlit as st
 import pandas as pd
 import random
+from datetime import datetime, date, timedelta  # <-- Make sure datetime is imported
+
 from src.config import APP_CONFIG
 from src.utils import display_results, get_selected_snippets
 from src.data_loaders import load_market_data
@@ -204,87 +206,6 @@ def add_manual_topic_adaptive(rag, topic_name, query, initial_threshold, quality
         
     except Exception as e:
         st.error(f"❌ Error during adaptive search: {str(e)}")
-
-# def display_manual_topics_overview():
-#     """Display overview of all manual topics with method comparison."""
-#     st.subheader("📊 Manual Topics Overview")
-    
-#     manual_topics = st.session_state.get('manual_topics', {})
-#     if not manual_topics:
-#         return
-    
-#     # Create comparison table
-#     comparison_data = []
-#     for topic_name, topic_data in manual_topics.items():
-#         snippets = topic_data['snippets']
-        
-#         # Basic stats
-#         companies = len(set(s.ticker for s in snippets)) if snippets else 0
-#         avg_score = sum(getattr(s, 'score', 0.5) for s in snippets) / len(snippets) if snippets else 0
-        
-#         # Sentiment analysis
-#         sentiment_counts = {'opportunity': 0, 'risk': 0, 'neutral': 0}
-#         for snippet in snippets:
-#             sentiment = getattr(snippet, 'climate_sentiment', 'neutral')
-#             if sentiment in sentiment_counts:
-#                 sentiment_counts[sentiment] += 1
-        
-#         # Method-specific info
-#         if topic_data.get('method') == 'adaptive':
-#             method_info = f"Adaptive (API calls: {topic_data['adaptive_results']['total_api_calls']})"
-#             threshold_info = f"{topic_data['adaptive_results']['final_threshold']:.2f} (optimized)"
-#         else:
-#             method_info = "Standard"
-#             threshold_info = f"{topic_data.get('threshold', 'N/A'):.2f} (fixed)"
-        
-#         comparison_data.append({
-#             'Topic': topic_name,
-#             'Method': method_info,
-#             'Threshold': threshold_info,
-#             'Snippets': len(snippets),
-#             'Companies': companies,
-#             'Avg Score': f"{avg_score:.3f}",
-#             'Opportunity': sentiment_counts['opportunity'],
-#             'Risk': sentiment_counts['risk'],
-#             'Neutral': sentiment_counts['neutral']
-#         })
-    
-#     comparison_df = pd.DataFrame(comparison_data)
-#     st.dataframe(comparison_df, use_container_width=True)
-    
-#     # Method comparison insights
-#     adaptive_topics = [t for t, d in manual_topics.items() if d.get('method') == 'adaptive']
-#     standard_topics = [t for t, d in manual_topics.items() if d.get('method') != 'adaptive']
-    
-#     if adaptive_topics and standard_topics:
-#         st.subheader("🔍 Method Comparison")
-        
-#         col1, col2 = st.columns(2)
-        
-#         with col1:
-#             st.write("**Adaptive Method Benefits:**")
-#             st.write("- Optimized thresholds for each topic")
-#             st.write("- Quality-controlled results")
-#             st.write("- User feedback integration")
-#             st.write("- Minimal false positives")
-        
-#         with col2:
-#             st.write("**Standard Method Benefits:**")
-#             st.write("- Faster processing")
-#             st.write("- Lower API costs")
-#             st.write("- User-controlled thresholds")
-#             st.write("- Good for exploratory analysis")
-    
-    # Visualizations (reuse existing functions from topic_search.py)
-    # from topic_search import analyze_topic_distribution, visualize_topic_comparison, export_topic_results
-    
-    # topic_results = {name: data['snippets'] for name, data in manual_topics.items()}
-    # analysis_df = analyze_topic_distribution(topic_results)
-    # visualize_topic_comparison(analysis_df)
-    
-    # # Export functionality
-    # st.markdown("#### Export Manual Topics")
-    # export_topic_results(topic_results, "manual_topics_with_adaptive_validation")
 
 # Add this to your main interface.py file to replace the existing manual topic tab
 def render_enhanced_manual_topic_tab(rag):
@@ -1098,3 +1019,354 @@ def execute_all_manual_topics_evolution_analysis(rag, show_eu, show_us, selected
                 
         except Exception as e:
             st.error(f"Error analyzing all manual topics evolution: {str(e)}")
+
+def render_event_definition_section():
+    st.subheader("📋 Event Definition")
+    
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("#### Predefined Climate Events")
+        predefined_events = load_predefined_events()
+        selected_events = st.multiselect(
+            "Select events to analyze",
+            list(predefined_events.keys()),
+            default=["Paris Agreement Adoption", "EU Green Deal"]
+        )
+    
+    with col2:
+        st.markdown("#### Custom Event")
+        custom_event_name = st.text_input("Event Name")
+        custom_event_date = st.date_input("Event Date")
+        if st.button("Add Custom Event"):
+            add_custom_event(custom_event_name, custom_event_date)
+
+# In ui_components.py, add this new function:
+
+def render_event_studies_tab(rag):
+    """Render the event studies tab for analyzing policy events."""
+    st.header("📅 Event Studies")
+    st.write("Analyze how climate policy events affect firm discussions in earnings calls")
+    
+    # Check if data is loaded
+    if not st.session_state.data_loaded:
+        st.warning("Please load market data first using the sidebar.")
+        return
+    
+    # Event definition section
+    render_event_definition_section()
+    
+    # Keywords for analysis
+    render_keywords_selection_section()
+    
+    # Event window settings
+    event_window, aggregation = render_event_window_settings()
+    
+    # Regional analysis options
+    render_regional_analysis_options()
+    
+    # Analysis execution
+    if st.button("🚀 Run Event Study Analysis", type="primary"):
+        execute_event_study_analysis(rag, event_window, aggregation)
+
+def render_event_definition_section():
+    """Render the event definition and selection section."""
+    st.subheader("📋 Event Definition")
+    
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("#### Predefined Climate Events")
+        predefined_events = {
+            "Paris Agreement Adoption": "2015-12-12",
+            "Trump Election": "2016-11-08", 
+            "Biden Election": "2020-11-07",
+            "EU Green Deal": "2019-12-11",
+            "US IRA Passage": "2022-08-16",
+            "COP21 Opening": "2015-11-30",
+            "US Paris Withdrawal": "2017-06-01",
+            "US Paris Re-entry": "2021-01-20"
+        }
+        
+        selected_events = st.multiselect(
+            "Select events to analyze",
+            list(predefined_events.keys()),
+            default=["Paris Agreement Adoption", "EU Green Deal"],
+            help="Choose which climate policy events to analyze"
+        )
+        
+        # Store in session state
+        st.session_state.selected_events = {
+            name: predefined_events[name] for name in selected_events
+        }
+    
+    with col2:
+        st.markdown("#### Custom Event")
+        custom_event_name = st.text_input("Event Name", placeholder="e.g., State Climate Law")
+        custom_event_date = st.date_input("Event Date")
+        
+        if st.button("➕ Add Custom Event"):
+            if custom_event_name and custom_event_date:
+                if 'custom_events' not in st.session_state:
+                    st.session_state.custom_events = {}
+                st.session_state.custom_events[custom_event_name] = str(custom_event_date)
+                st.success(f"Added custom event: {custom_event_name}")
+                st.rerun()
+
+def render_keywords_selection_section():
+    """Render semantic search query selection for event analysis."""
+    st.subheader("🔍 Semantic Search Queries")
+    
+    # Predefined event-specific queries
+    event_queries = {
+        "Paris Agreement": [
+            "paris agreement climate accord international climate deal",
+            "COP21 climate summit global climate agreement",
+            "international climate policy framework"
+        ],
+        "EU Green Deal": [
+            "european green deal climate policy",
+            "EU climate legislation environmental regulation",
+            "european climate framework sustainability policy"
+        ],
+        "General Climate Policy": [
+            "climate policy environmental regulation",
+            "carbon regulation emissions policy",
+            "climate legislation regulatory framework"
+        ],
+        "Carbon Pricing": [
+            "carbon pricing emissions trading",
+            "carbon tax climate pricing mechanism",
+            "cap and trade carbon markets"
+        ]
+    }
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.markdown("#### Event-Specific Queries")
+        selected_events = st.session_state.get('selected_events', {})
+        
+        # Show relevant queries based on selected events
+        suggested_queries = []
+        for event_name in selected_events.keys():
+            if "Paris Agreement" in event_name:
+                suggested_queries.extend(event_queries["Paris Agreement"])
+            elif "Green Deal" in event_name:
+                suggested_queries.extend(event_queries["EU Green Deal"])
+        
+        # Add general queries
+        suggested_queries.extend(event_queries["General Climate Policy"])
+        
+        # Remove duplicates
+        suggested_queries = list(set(suggested_queries))
+        
+        selected_queries = st.multiselect(
+            "Select semantic search queries",
+            suggested_queries,
+            default=suggested_queries[:3] if len(suggested_queries) >= 3 else suggested_queries,
+            help="Choose semantic search queries that capture the essence of climate policy discussions"
+        )
+    
+    with col2:
+        st.markdown("#### Custom Queries")
+        custom_queries = st.text_area(
+            "Additional semantic queries (one per line)",
+            placeholder="climate transition strategy\nregulatory uncertainty environment\ncarbon neutral sustainability",
+            help="Add custom semantic search queries"
+        )
+        
+        # Relevance threshold
+        relevance_threshold = st.slider(
+            "Relevance Threshold",
+            min_value=0.1,
+            max_value=0.6,
+            value=0.25,
+            step=0.05,
+            help="Minimum similarity score for including snippets"
+        )
+        
+        st.session_state.relevance_threshold = relevance_threshold
+    
+    # Combine all queries
+    all_queries = selected_queries.copy()
+    if custom_queries:
+        custom_list = [q.strip() for q in custom_queries.split('\n') if q.strip()]
+        all_queries.extend(custom_list)
+    
+    # Store queries in session state
+    st.session_state.event_study_queries = all_queries
+    
+    # Show selected queries
+    if all_queries:
+        st.markdown("**Selected Semantic Queries:**")
+        for i, query in enumerate(all_queries, 1):
+            st.write(f"{i}. *{query}*")
+
+def render_event_window_settings():
+    """Render event window configuration."""
+    st.subheader("⏰ Event Window Settings")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        pre_event_days = st.number_input(
+            "Days Before Event", 
+            min_value=1, max_value=365, value=90,
+            help="Number of days before the event to include in analysis"
+        )
+    
+    with col2:
+        post_event_days = st.number_input(
+            "Days After Event", 
+            min_value=1, max_value=365, value=90,
+            help="Number of days after the event to include in analysis"
+        )
+    
+    with col3:
+        aggregation_level = st.selectbox(
+            "Aggregation Level",
+            ["Daily", "Weekly", "Monthly", "Quarterly"],
+            index=2,  # Default to Monthly
+            help="How to group the data for analysis"
+        )
+    
+    return (-pre_event_days, post_event_days), aggregation_level
+
+def render_regional_analysis_options():
+    """Render options for regional comparison."""
+    st.subheader("🌍 Regional Analysis")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        compare_regions = st.checkbox(
+            "Compare EU vs US Response", 
+            value=True,
+            help="Analyze how EU and US firms differ in their response to events"
+        )
+    
+    with col2:
+        if compare_regions:
+            analysis_type = st.radio(
+                "Comparison Type",
+                ["Side-by-side", "Difference"],
+                help="How to display regional comparisons"
+            )
+            st.session_state.regional_comparison = analysis_type
+    
+    st.session_state.compare_regions = compare_regions
+
+def execute_event_study_analysis(rag, event_window, aggregation):
+    """Execute the event study analysis using semantic search."""
+    
+    # Get stored parameters
+    selected_events = st.session_state.get('selected_events', {})
+    search_queries = st.session_state.get('event_study_queries', [])
+    compare_regions = st.session_state.get('compare_regions', False)
+    
+    if not selected_events:
+        st.warning("Please select at least one event to analyze.")
+        return
+    
+    if not search_queries:
+        st.warning("Please select semantic search queries for analysis.")
+        return
+    
+    # Store event window in session state for analyzer to access
+    st.session_state.event_window = event_window
+    
+    with st.spinner("Running semantic event study analysis..."):
+        try:
+            # Import the event study analyzer here to avoid circular imports
+            from event_study_analyzer import EventStudyAnalyzer
+            
+            analyzer = EventStudyAnalyzer(rag)
+            
+            # Analyze each selected event
+            results = {}
+            for event_name, event_date in selected_events.items():
+                st.info(f"Analyzing: {event_name} using semantic search")
+                
+                # Add validation for event date
+                try:
+                    # Handle different possible date formats
+                    if isinstance(event_date, str):
+                        # Try different formats
+                        for date_format in ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"]:
+                            try:
+                                datetime.strptime(event_date, date_format)
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            st.error(f"Invalid date format for {event_name}: {event_date}")
+                            continue
+                    elif isinstance(event_date, date):
+                        # Convert date object to string
+                        event_date = event_date.strftime("%Y-%m-%d")
+                    else:
+                        st.error(f"Invalid date type for {event_name}: {type(event_date)}")
+                        continue
+                    
+                    # Use semantic search instead of keywords
+                    event_results = analyzer.analyze_event_impact(
+                        event_date, event_window, search_queries, compare_regions
+                    )
+                    results[event_name] = event_results
+                    
+                except Exception as e:
+                    st.error(f"Error analyzing {event_name}: {str(e)}")
+                    continue
+            
+            if results:
+                # Display results
+                display_event_study_results(results, compare_regions)
+                
+                # Store results for export
+                st.session_state.event_study_results = results
+                st.success("✅ Semantic event study analysis completed!")
+            else:
+                st.warning("No valid events were analyzed.")
+            
+        except Exception as e:
+            st.error(f"Error in event study analysis: {str(e)}")
+            st.error("Please check the error details below:")
+            st.exception(e)
+            st.info("Try selecting different events or search queries.")
+
+def display_event_study_results(results, compare_regions):
+    """Display the event study results."""
+    st.subheader("📊 Event Study Results")
+    
+    # Results tabs for each event
+    if len(results) == 1:
+        print("yes it 1 event")
+        # Single event - show directly
+        event_name, event_data = list(results.items())[0]
+        display_single_event_results(event_name, event_data, compare_regions)
+    else:
+        print('multiple events')
+        # Multiple events - create sub-tabs
+        event_tabs = st.tabs(list(results.keys()))
+        for i, (event_name, event_data) in enumerate(results.items()):
+            with event_tabs[i]:
+                display_single_event_results(event_name, event_data, compare_regions)
+    
+    # Multi-event comparison if more than one event
+    if len(results) > 1:
+        st.markdown("---")
+        st.subheader("🔄 Multi-Event Comparison")
+        display_multi_event_comparison(results)
+
+def display_single_event_results(event_name, event_data, compare_regions):
+    """Display results for a single event."""
+    # This function will contain the visualization code
+    # that we defined earlier (timeline plots, statistical tests, etc.)
+    pass
+
+def display_multi_event_comparison(results):
+    """Display comparison across multiple events."""
+    # This function will create comparison visualizations
+    pass
+

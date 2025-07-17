@@ -57,3 +57,10 @@ TOPIC_ANALYSIS_CONFIG = {
     'vectorizer_min_df': 3,
     'vectorizer_max_df': 0.8
 }
+
+EVENT_STUDY_CONFIG = {
+    'default_event_window': (-90, 90),  # days around event
+    'default_estimation_window': (-252, -46),  # trading days for baseline
+    'min_observations': 10,  # minimum observations per firm
+    'confidence_intervals': [0.90, 0.95, 0.99]
+}

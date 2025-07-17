@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 import streamlit as st
 from src.config import setup_environment, check_required_libraries, APP_CONFIG
 from src.ui_components import (
-    render_sidebar, render_evolution_analysis_tab, render_enhanced_manual_topic_tab
+    render_sidebar, render_evolution_analysis_tab, render_enhanced_manual_topic_tab, render_event_studies_tab
 )
 from src.topic_analysis import run_topic_analysis, display_topic_results, create_topic_results_dataframe
 from src.utils import generate_topic_names
@@ -28,6 +28,12 @@ def initialize_session_state():
         st.session_state.manual_topics = {}
     if 'topic_search_results' not in st.session_state:
         st.session_state.topic_search_results = {}
+    if 'selected_events' not in st.session_state:
+        st.session_state.selected_events = {}
+    if 'event_study_keywords' not in st.session_state:
+        st.session_state.event_study_keywords = []
+    if 'event_study_results' not in st.session_state:
+        st.session_state.event_study_results = {}
 
 def main():
     """Main application function."""
@@ -72,10 +78,11 @@ def main():
     st.info("🔧 Threading: Single-threaded (macOS optimized)")
     
     # Main interface tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "🔍 Snippet Selection", 
         "🎯 Topic Search", 
         "📝 Manual Topic ID", 
+        "📅 Event Studies",  # <-- ADD THIS NEW TAB
         "📊 Evolution Analysis"
     ])
     
@@ -89,7 +96,10 @@ def main():
         render_enhanced_manual_topic_tab(rag)  # Existing with adaptive validation
     
     with tab4:
-        render_evolution_analysis_tab(rag)  # Existing
+        render_event_studies_tab(rag)  # Existing
+
+    with tab5:
+        render_evolution_analysis_tab(rag)
 
 def render_topic_analysis_tab(rag):
     """Render the BERTopic analysis tab."""

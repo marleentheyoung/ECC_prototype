@@ -323,3 +323,24 @@ class GreenInvestmentRAG:
             # For combined data, we need to rebuild the index since we're combining two indices
             self.build_embedding_index()
             print(f"Built combined index from separate markets: {len(self.snippets)} snippets")
+
+class EventStudyAnalyzer:
+    def __init__(self, rag_system):
+        self.rag = rag_system
+        self.major_climate_events = {
+            "Paris Agreement Adoption": "2015-12-12",
+            "Trump Election": "2016-11-08", 
+            "Biden Election": "2020-11-07",
+            "EU Green Deal": "2019-12-11",
+            "US IRA Passage": "2022-08-16",
+            "COP21 Opening": "2015-11-30",
+            "US Paris Withdrawal": "2017-06-01",
+            "US Paris Re-entry": "2021-01-20"
+        }
+    
+    def analyze_event_impact(self, event_date, event_window=(-30, 30), 
+                           baseline_window=(-120, -31)):
+        """
+        Analyze how discussion patterns change around specific events
+        """
+        pass
