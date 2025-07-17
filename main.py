@@ -1,172 +1,125 @@
-# main.py - Main application file
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-
+# main.py - Streamlined main application file
 import streamlit as st
 from src.config import setup_environment, check_required_libraries, APP_CONFIG
+from src.data_loaders import load_market_data
 from src.ui_components import (
-    render_sidebar, render_evolution_analysis_tab, render_enhanced_manual_topic_tab, render_event_studies_tab
+    render_sidebar, 
+    render_evolution_analysis_tab, 
+    render_enhanced_manual_topic_tab, 
+    render_event_studies_tab
 )
+from src.simplified_snippet_selection import render_simplified_snippet_selection
 from src.topic_analysis import run_topic_analysis, display_topic_results, create_topic_results_dataframe
 from src.utils import generate_topic_names
-from src.simplified_snippet_selection import render_simplified_snippet_selection
+import plotly.express as px
 
 def initialize_session_state():
-    """Initialize session state variables."""
-    if 'data_loaded' not in st.session_state:
-        st.session_state.data_loaded = False
-    if 'rag_system' not in st.session_state:
-        st.session_state.rag_system = None
-    if 'current_market' not in st.session_state:
-        st.session_state.current_market = None
-    if 'anthropic_api_key' not in st.session_state:
-        st.session_state.anthropic_api_key = None
-    if 'selected_snippets' not in st.session_state:
-        st.session_state.selected_snippets = []
-    if 'manual_topics' not in st.session_state:
-        st.session_state.manual_topics = {}
-    if 'topic_search_results' not in st.session_state:
-        st.session_state.topic_search_results = {}
-    if 'selected_events' not in st.session_state:
-        st.session_state.selected_events = {}
-    if 'event_study_keywords' not in st.session_state:
-        st.session_state.event_study_keywords = []
-    if 'event_study_results' not in st.session_state:
-        st.session_state.event_study_results = {}
+    """Initialize all session state variables in one place."""
+    defaults = {
+        'data_loaded': False,
+        'rag_system': None,
+        'current_market': None,
+        'anthropic_api_key': None,
+        'selected_snippets': [],
+        'selection_method': '',
+        'manual_topics': {},
+        'topic_search_results': {},
+        'selected_events': {},
+        'event_study_keywords': [],
+        'event_study_results': {}
+    }
+    
+    for key, default_value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
 
-def main():
-    """Main application function."""
-    # Setup environment
-    setup_environment()
-    
-    # Configure Streamlit page
-    st.set_page_config(
-        page_title=APP_CONFIG['page_title'],
-        page_icon=APP_CONFIG['page_icon'],
-        layout=APP_CONFIG['layout']
-    )
-    
-    # Check required libraries
+def check_prerequisites():
+    """Check if required libraries and data are available."""
+    # Check libraries
     libraries_available, error_msg = check_required_libraries()
-    
     if not libraries_available:
-        st.error("Required libraries not available. Please install them first.")
+        st.error("❌ Required libraries not available")
         st.error(f"Error: {error_msg}")
-        st.code("pip install umap-learn bertopic")
-        return
+        st.code("pip install umap-learn bertopic sentence-transformers")
+        return False
     
-    # Initialize session state
-    initialize_session_state()
-    
-    # Main app title and description
-    st.title("🌱 Green Investment Analyzer")
-    st.subheader("Extract climate investment insights from earnings calls")
-    
-    # Render sidebar
-    render_sidebar()
-    
-    # Check if data is loaded
+    # Check data loaded
     if not st.session_state.data_loaded:
-        st.warning("Please select and load market data using the sidebar.")
-        return
+        st.warning("⚠️ Please select and load market data using the sidebar")
+        return False
     
-    rag = st.session_state.rag_system
-    
-    # Display current market info
-    st.info(f"📊 Currently analyzing: {st.session_state.current_market} market with {len(rag.snippets)} snippets")
-    st.info("🔧 Threading: Single-threaded (macOS optimized)")
-    
-    # Main interface tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🔍 Snippet Selection", 
-        "🎯 Topic Search", 
-        "📝 Manual Topic ID", 
-        "📅 Event Studies",  # <-- ADD THIS NEW TAB
-        "📊 Evolution Analysis"
-    ])
-    
-    with tab1:
-        render_simplified_snippet_selection(rag)  # New simplified version
-    
-    with tab2:
-        render_topic_analysis_tab(rag)  # Restored BERTopic functionality
-    
-    with tab3:
-        render_enhanced_manual_topic_tab(rag)  # Existing with adaptive validation
-    
-    with tab4:
-        render_event_studies_tab(rag)  # Existing
-
-    with tab5:
-        render_evolution_analysis_tab(rag)
+    return True
 
 def render_topic_analysis_tab(rag):
-    """Render the BERTopic analysis tab."""
-    st.header("📈 Topic Analysis")
+    """Streamlined BERTopic analysis tab."""
+    st.header("📈 Topic Analysis (BERTopic)")
     
-    # Check if snippets are selected
+    # Check prerequisites
     selected_snippets = st.session_state.get('selected_snippets', [])
-    
     if not selected_snippets:
-        st.warning("⚠️ No snippets selected for analysis.")
-        st.info("Go to the 'Snippet Selection' tab first to select snippets.")
+        st.warning("⚠️ No snippets selected for analysis")
+        st.info("👆 Go to 'Snippet Selection' tab first to select snippets")
         return
     
-    st.info(f"📊 Ready to analyze {len(selected_snippets)} selected snippets")
-    st.write(f"**Selection method:** {st.session_state.get('selection_method', 'Unknown')}")
+    # Display current selection info
+    st.success(f"✅ Ready to analyze {len(selected_snippets)} selected snippets")
+    st.caption(f"Selection method: {st.session_state.get('selection_method', 'Unknown')}")
     
-    # Topic analysis parameters
+    # Topic analysis configuration
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        nr_topics = st.slider("Number of Topics to Find", 
-                             min_value=2, 
-                             max_value=min(15, len(selected_snippets)//20),
-                             value=min(6, len(selected_snippets)//20))
+        max_topics_possible = min(15, len(selected_snippets) // 20)
+        nr_topics = st.slider(
+            "Number of Topics to Find", 
+            min_value=2, 
+            max_value=max_topics_possible,
+            value=min(6, max_topics_possible),
+            help=f"Maximum {max_topics_possible} topics for {len(selected_snippets)} snippets"
+        )
     
     with col2:
-        st.subheader("Analysis Info")
         st.metric("Selected Snippets", len(selected_snippets))
-        st.metric("Max Topics", min(15, len(selected_snippets)//20))
+        st.metric("Max Recommended Topics", max_topics_possible)
     
+    # Run analysis
     if st.button("🚀 Run Topic Analysis", type="primary"):
-        with st.spinner("Running topic analysis..."):
+        with st.spinner("Running BERTopic analysis..."):
             try:
-                # Run topic analysis
+                # Run topic modeling
                 topic_model, topics, topic_info = run_topic_analysis(selected_snippets, nr_topics)
                 
                 if topic_model is None:
+                    st.error("❌ Topic analysis failed")
                     return
                 
-                # Generate topic names
-                st.subheader("🤖 Generating Topic Names...")
-                with st.spinner("Generating meaningful topic names using LLM..."):
-                    topic_names = generate_topic_names(
-                        topic_model, 
-                        topic_info, 
-                        st.session_state.get('anthropic_api_key')
-                    )
+                # Generate LLM names for topics
+                if st.session_state.get('anthropic_api_key'):
+                    with st.spinner("🤖 Generating topic names with LLM..."):
+                        topic_names = generate_topic_names(
+                            topic_model, topic_info, st.session_state.anthropic_api_key
+                        )
+                else:
+                    topic_names = {i: f"Topic {i}" for i in topic_info['Topic'].tolist() if i != -1}
+                    st.info("💡 Add Anthropic API key in sidebar for automatic topic naming")
                 
                 # Display results
                 display_topic_results(topic_model, topic_info, topic_names)
                 
-                # Show topic distribution chart
+                # Topic distribution chart
                 st.subheader("📊 Topic Distribution")
-                topic_counts = topic_info[topic_info['Topic'] != -1]['Count'].tolist()
-                topic_labels = [topic_names.get(t, f"Topic {t}") for t in topic_info[topic_info['Topic'] != -1]['Topic'].tolist()]
-                
-                if topic_counts and topic_labels:
+                valid_topics = topic_info[topic_info['Topic'] != -1]
+                if not valid_topics.empty:
                     fig = px.bar(
-                        x=topic_labels, 
-                        y=topic_counts,
-                        title="Number of Documents per Topic",
+                        x=[topic_names.get(t, f"Topic {t}") for t in valid_topics['Topic']], 
+                        y=valid_topics['Count'],
+                        title="Documents per Topic",
                         labels={'x': 'Topic', 'y': 'Document Count'}
                     )
                     fig.update_xaxes(tickangle=45)
                     st.plotly_chart(fig, use_container_width=True)
                 
-                # Store results in session state for evolution analysis
+                # Store results for other tabs
                 st.session_state.topic_model = topic_model
                 st.session_state.topic_names = topic_names
                 st.session_state.topic_info = topic_info
@@ -177,18 +130,70 @@ def render_topic_analysis_tab(rag):
                 results_df = create_topic_results_dataframe(selected_snippets, topics, topic_names)
                 csv = results_df.to_csv(index=False)
                 st.download_button(
-                    label="📥 Download Topic Analysis Results as CSV",
+                    label="📥 Download Results as CSV",
                     data=csv,
                     file_name="topic_analysis_results.csv",
                     mime="text/csv"
                 )
                 
-                st.success("✅ Topic analysis completed! Go to 'Evolution Analysis' tab to analyze trends over time.")
+                st.success("✅ Analysis completed! Use 'Evolution Analysis' tab to see trends over time")
                 
             except Exception as e:
-                st.error(f"Error running topic analysis: {str(e)}")
-                st.info("Try reducing the number of topics or selecting more snippets.")
+                st.error(f"❌ Error in topic analysis: {str(e)}")
+                st.info("💡 Try reducing number of topics or selecting more snippets")
 
+def main():
+    """Main application function - streamlined and clear."""
+    
+    # Setup
+    setup_environment()
+    st.set_page_config(
+        page_title=APP_CONFIG['page_title'],
+        page_icon=APP_CONFIG['page_icon'],
+        layout=APP_CONFIG['layout']
+    )
+    
+    # Initialize
+    initialize_session_state()
+    
+    # Header
+    st.title("🌱 Green Investment Analyzer")
+    st.markdown("*Extract climate investment insights from earnings calls using semantic search and topic modeling*")
+    
+    # Sidebar
+    render_sidebar()
+    
+    # Check prerequisites
+    if not check_prerequisites():
+        return
+    
+    # Main content
+    rag = st.session_state.rag_system
+    st.success(f"📊 Loaded: {st.session_state.current_market} market ({len(rag.snippets)} snippets)")
+    
+    # Navigation tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🔍 Snippet Selection", 
+        "📈 Topic Analysis", 
+        "📝 Manual Topics", 
+        "📅 Event Studies",
+        "📊 Evolution Analysis"
+    ])
+    
+    with tab1:
+        render_simplified_snippet_selection(rag)
+    
+    with tab2:
+        render_topic_analysis_tab(rag)
+    
+    with tab3:
+        render_enhanced_manual_topic_tab(rag)
+    
+    with tab4:
+        render_event_studies_tab(rag)
+
+    with tab5:
+        render_evolution_analysis_tab(rag)
 
 if __name__ == "__main__":
     main()
