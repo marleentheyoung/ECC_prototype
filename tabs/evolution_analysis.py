@@ -163,7 +163,52 @@ def render_manual_topics_evolution_analysis(rag, show_eu, show_us, selected_year
         if st.button("📊 Analyze All Manual Topics Evolution", type="primary"):
             execute_all_manual_topics_evolution_analysis(rag, show_eu, show_us, 
                                                         selected_years, time_granularity)
-
+def execute_manual_topic_evolution_analysis(rag, selected_topic, show_eu, show_us, 
+                                          selected_years, time_granularity):
+    """Execute evolution analysis for a single manual topic."""
+    with st.spinner("Analyzing manual topic evolution over time..."):
+        try:
+            from src.evolution_analysis import analyze_snippets_evolution
+            from src.visualization import display_evolution_charts_simple, display_evolution_insights_simple
+            
+            manual_topics = st.session_state.get('manual_topics', {})
+            
+            if selected_topic not in manual_topics:
+                st.error(f"Topic '{selected_topic}' not found in manual topics.")
+                return
+            
+            # Get snippets for the selected topic
+            topic_snippets = manual_topics[selected_topic]['snippets']
+            
+            # Analyze evolution
+            evolution_data = analyze_snippets_evolution(
+                topic_snippets, selected_topic, show_eu, show_us, 
+                selected_years, time_granularity
+            )
+            
+            if not evolution_data:
+                st.warning("No data found for the selected time period and markets.")
+            else:
+                # Display results
+                st.subheader(f"📊 Evolution Analysis: {selected_topic}")
+                
+                display_evolution_charts_simple(evolution_data, selected_topic, time_granularity)
+                display_evolution_insights_simple(evolution_data, selected_topic, time_granularity)
+                
+                # Export option
+                if evolution_data:
+                    df = pd.DataFrame(evolution_data)
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Evolution Data",
+                        data=csv,
+                        file_name=f"evolution_{selected_topic.replace(' ', '_')}.csv",
+                        mime="text/csv"
+                    )
+                
+        except Exception as e:
+            st.error(f"Error analyzing topic evolution: {str(e)}")
+            
 def execute_all_manual_topics_evolution_analysis(rag, show_eu, show_us, selected_years, time_granularity):
     """Execute evolution analysis for all manual topics."""
     with st.spinner("Analyzing all manual topics evolution over time..."):
