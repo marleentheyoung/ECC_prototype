@@ -16,6 +16,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+sem-search-clim-risk/
 lib64/
 parts/
 sdist/
